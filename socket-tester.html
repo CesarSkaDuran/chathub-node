@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>ChatHub — Socket.io Tester</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 20px; }
+    h1 { color: #58a6ff; margin-bottom: 20px; font-size: 18px; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 16px;
+    }
+    .card h2 { color: #8b949e; font-size: 13px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+    input, select {
+      width: 100%; padding: 7px 10px; background: #0d1117;
+      border: 1px solid #30363d; border-radius: 6px;
+      color: #c9d1d9; font-family: monospace; font-size: 13px;
+      margin-bottom: 8px;
+    }
+    button {
+      padding: 7px 14px; border: none; border-radius: 6px;
+      cursor: pointer; font-family: monospace; font-size: 13px;
+      margin-right: 6px; margin-bottom: 6px;
+    }
+    .btn-blue   { background: #1f6feb; color: #fff; }
+    .btn-green  { background: #238636; color: #fff; }
+    .btn-red    { background: #b62324; color: #fff; }
+    .btn-gray   { background: #30363d; color: #c9d1d9; }
+    button:hover { opacity: 0.85; }
+
+    #status {
+      display: inline-block; padding: 3px 10px; border-radius: 20px;
+      font-size: 12px; font-weight: bold; margin-bottom: 16px;
+    }
+    .connected    { background: #1a4731; color: #3fb950; }
+    .disconnected { background: #3d1515; color: #f85149; }
+
+    #log {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      padding: 12px; height: 340px; overflow-y: auto;
+      font-size: 12px; line-height: 1.7;
+      grid-column: 1 / -1;
+    }
+    .log-in    { color: #3fb950; }
+    .log-out   { color: #58a6ff; }
+    .log-error { color: #f85149; }
+    .log-info  { color: #8b949e; }
+    .log-event { color: #d2a8ff; }
+    .ts { color: #484f58; margin-right: 6px; }
+
+    label { font-size: 12px; color: #8b949e; display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+
+<h1>🔌 ChatHub — Socket.io Tester</h1>
+<span id="status" class="disconnected">● DESCONECTADO</span>
+
+<div class="grid">
+
+  <!-- CONEXION -->
+  <div class="card">
+    <h2>1. Conectar</h2>
+    <label>URL del servidor</label>
+    <input id="serverUrl" value="http://localhost:3000">
+    <label>JWT Token (obtener con POST /api/auth/login)</label>
+    <input id="token" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+    <br>
+    <button class="btn-blue" onclick="conectar()">Conectar</button>
+    <button class="btn-red"  onclick="desconectar()">Desconectar</button>
+    <button class="btn-gray" onclick="loginRapido()">Login rápido (admin)</button>
+  </div>
+
+  <!-- ROOMS / CONVERSACIONES -->
+  <div class="card">
+    <h2>2. Unirse a conversación</h2>
+    <label>ID de conversación</label>
+    <input id="convId" value="1" type="number">
+    <button class="btn-green" onclick="joinConv()">join:conversation</button>
+    <button class="btn-gray"  onclick="leaveConv()">leave:conversation</button>
+    <br><br>
+    <h2>3. Typing indicator</h2>
+    <button class="btn-gray" onclick="typingStart()">typing:start</button>
+    <button class="btn-gray" onclick="typingStop()">typing:stop</button>
+  </div>
+
+  <!-- ENVIAR MENSAJE (via API REST, no socket) -->
+  <div class="card">
+    <h2>4. Enviar mensaje (API REST → dispara socket)</h2>
+    <label>ID conversación</label>
+    <input id="sendConvId" value="1" type="number">
+    <label>Texto</label>
+    <input id="msgBody" value="Hola desde el tester!">
+    <button class="btn-green" onclick="enviarMensaje()">POST /api/conversations/:id/messages</button>
+  </div>
+
+  <!-- SIMULAR MENSAJE ENTRANTE -->
+  <div class="card">
+    <h2>5. Simular mensaje entrante (debug)</h2>
+    <p style="color:#8b949e;font-size:12px;margin-bottom:10px">
+      Llama directamente al endpoint interno para simular que llega un WhatsApp.
+    </p>
+    <label>ID canal WhatsApp</label>
+    <input id="simChannelId" value="1" type="number">
+    <label>Teléfono del contacto</label>
+    <input id="simPhone" value="573109999999">
+    <label>Mensaje</label>
+    <input id="simMsg" value="Hola, esto es una prueba entrante">
+    <button class="btn-blue" onclick="simularEntrante()">Simular mensaje entrante</button>
+  </div>
+
+  <!-- LOG -->
+  <div id="log"><span class="log-info ts">—</span><span class="log-info">Esperando conexión...</span></div>
+
+</div>
+
+<script>
+  let socket = null
+  let token  = null
+
+  function ts() {
+    return new Date().toLocaleTimeString()
+  }
+
+  function log(msg, type = 'info') {
+    const div = document.getElementById('log')
+    div.innerHTML += `<div><span class="ts">${ts()}</span><span class="log-${type}">${msg}</span></div>`
+    div.scrollTop = div.scrollHeight
+  }
+
+  // ── Login rápido para obtener el token ────────────────────────────────────
+  async function loginRapido() {
+    const url = document.getElementById('serverUrl').value
+    try {
+      const res = await fetch(`${url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'admin@chathub.com', password: '123456' })
+      })
+      const data = await res.json()
+      if (data.token) {
+        token = data.token
+        document.getElementById('token').value = token
+        log(`✓ Login OK — ${data.user.name} (${data.user.role})`, 'out')
+        log('Token guardado. Ahora haz clic en Conectar.', 'info')
+      } else {
+        log('Error en login: ' + JSON.stringify(data), 'error')
+      }
+    } catch (e) {
+      log('Error conectando al servidor: ' + e.message, 'error')
+    }
+  }
+
+  // ── Conectar Socket.io ────────────────────────────────────────────────────
+  function conectar() {
+    if (socket?.connected) { log('Ya estás conectado', 'info'); return }
+
+    token = document.getElementById('token').value.trim()
+    const url = document.getElementById('serverUrl').value
+
+    if (!token) { log('Primero obtén el token con "Login rápido"', 'error'); return }
+
+    socket = io(url, { auth: { token } })
+
+    socket.on('connect', () => {
+      document.getElementById('status').className = 'connected'
+      document.getElementById('status').textContent = '● CONECTADO — ' + socket.id
+      log('✓ Conectado al servidor. Socket ID: ' + socket.id, 'out')
+    })
+
+    socket.on('disconnect', (reason) => {
+      document.getElementById('status').className = 'disconnected'
+      document.getElementById('status').textContent = '● DESCONECTADO'
+      log('Desconectado: ' + reason, 'error')
+    })
+
+    socket.on('connect_error', (err) => {
+      log('Error de conexión: ' + err.message, 'error')
+    })
+
+    // ── Eventos del servidor ─────────────────────────────────────────────
+    socket.on('message:new', (data) => {
+      log('📨 message:new → ' + JSON.stringify(data, null, 0), 'in')
+    })
+
+    socket.on('conversation:updated', (data) => {
+      log('🔄 conversation:updated → ' + JSON.stringify(data, null, 0), 'event')
+    })
+
+    socket.on('channel:qr', (data) => {
+      log('📷 channel:qr → channel_id: ' + data.channel_id + ' (QR recibido)', 'event')
+      // Mostrar el QR como imagen
+      const img = document.createElement('img')
+      img.src = data.qr
+      img.style = 'width:200px;height:200px;display:block;margin:8px 0;border:2px solid #58a6ff;border-radius:4px'
+      document.getElementById('log').appendChild(img)
+    })
+
+    socket.on('channel:status', (data) => {
+      log('📡 channel:status → ' + JSON.stringify(data), 'event')
+    })
+
+    socket.on('typing:start', (data) => {
+      log('✍️  typing:start → ' + JSON.stringify(data), 'info')
+    })
+
+    socket.on('typing:stop', (data) => {
+      log('⏹  typing:stop → ' + JSON.stringify(data), 'info')
+    })
+  }
+
+  function desconectar() {
+    socket?.disconnect()
+    socket = null
+  }
+
+  // ── Rooms ─────────────────────────────────────────────────────────────────
+  function joinConv() {
+    const id = document.getElementById('convId').value
+    if (!socket?.connected) { log('No conectado', 'error'); return }
+    socket.emit('join:conversation', Number(id))
+    log(`→ join:conversation (id: ${id})`, 'out')
+  }
+
+  function leaveConv() {
+    const id = document.getElementById('convId').value
+    if (!socket?.connected) { log('No conectado', 'error'); return }
+    socket.emit('leave:conversation', Number(id))
+    log(`→ leave:conversation (id: ${id})`, 'out')
+  }
+
+  function typingStart() {
+    const id = document.getElementById('convId').value
+    if (!socket?.connected) { log('No conectado', 'error'); return }
+    socket.emit('typing:start', { conversation_id: Number(id) })
+    log(`→ typing:start (conv: ${id})`, 'out')
+  }
+
+  function typingStop() {
+    const id = document.getElementById('convId').value
+    if (!socket?.connected) { log('No conectado', 'error'); return }
+    socket.emit('typing:stop', { conversation_id: Number(id) })
+    log(`→ typing:stop (conv: ${id})`, 'out')
+  }
+
+  // ── Enviar mensaje via REST (esto dispara el evento socket en el server) ──
+  async function enviarMensaje() {
+    const url    = document.getElementById('serverUrl').value
+    const convId = document.getElementById('sendConvId').value
+    const body   = document.getElementById('msgBody').value
+
+    if (!token) { log('Sin token, haz login primero', 'error'); return }
+
+    try {
+      const res = await fetch(`${url}/api/conversations/${convId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ type: 'text', body })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        log(`✓ Mensaje enviado (id: ${data.id}) — el evento message:new debería aparecer arriba`, 'out')
+      } else {
+        log('Error: ' + JSON.stringify(data), 'error')
+      }
+    } catch (e) {
+      log('Error: ' + e.message, 'error')
+    }
+  }
+
+  // ── Simular mensaje entrante (solo para pruebas) ──────────────────────────
+  async function simularEntrante() {
+    const url       = document.getElementById('serverUrl').value
+    const channelId = document.getElementById('simChannelId').value
+    const phone     = document.getElementById('simPhone').value
+    const msg       = document.getElementById('simMsg').value
+
+    if (!token) { log('Sin token, haz login primero', 'error'); return }
+
+    // Llamamos un endpoint de debug que simula un mensaje entrante de Baileys
+    try {
+      const res = await fetch(`${url}/api/debug/simulate-inbound`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ channel_id: Number(channelId), phone, body: msg })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        log(`✓ Mensaje entrante simulado → conv_id: ${data.conversation_id}`, 'in')
+        log('Únete a esa conversación para ver el evento message:new', 'info')
+      } else {
+        log('Error: ' + JSON.stringify(data), 'error')
+      }
+    } catch (e) {
+      log('Error: ' + e.message, 'error')
+    }
+  }
+</script>
+</body>
+</html>
