@@ -41,7 +41,7 @@ router.get('/agents',                               authMiddleware, listAgents)
 router.post('/agents',                              authMiddleware, requireRole('admin', 'supervisor'), createAgent)
 router.put('/agents/:id',                           authMiddleware, requireRole('admin', 'supervisor'), updateAgent)
 
-// ── Webhook interno de estado de mensajes (llamado por Baileys internamente) ──
-router.post('/messages/status', msgStatus)
+// ── Estado de mensajes (requiere autenticacion) ──────────────────────────────
+router.post('/messages/status', authMiddleware, msgStatus)
 
 export default router

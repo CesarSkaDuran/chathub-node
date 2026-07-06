@@ -1,9 +1,13 @@
 import db from '../db/knex.js'
 import { sendWhatsApp } from '../services/whatsapp.service.js'
+import { loadAccessibleConversation } from '../utils/access.js'
 
 export async function history(req, res) {
   const { page = 1, limit = 50 } = req.query
   const offset = (Number(page) - 1) * Number(limit)
+
+  const access = await loadAccessibleConversation(req.user, req.params.id)
+  if (access.error) return res.status(access.error.status).json({ error: access.error.message })
 
   const messages = await db('messages as m')
     .leftJoin('users as u', 'm.sender_user_id', 'u.id')
@@ -30,12 +34,17 @@ export async function send(req, res) {
     .join('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .select('c.id', 'c.channel_id', 'c.contact_id',
-            'ch.type as channel_type', 'ch.session_id',
+            'ch.type as channel_type', 'ch.session_id', 'ch.branch_id',
             'ct.phone', 'ct.email as contact_email', 'ct.instagram_handle')
     .where('c.id', convId)
     .first()
 
   if (!conv) return res.status(404).json({ error: 'Conversacion no encontrada' })
+
+  // Agente: solo puede enviar en conversaciones de su sucursal
+  if (req.user.role === 'agent' && conv.branch_id !== req.user.branch_id) {
+    return res.status(403).json({ error: 'Sin acceso a esta conversacion' })
+  }
 
   // Guardar mensaje
   const [msgId] = await db('messages').insert({
