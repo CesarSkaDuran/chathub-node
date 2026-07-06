@@ -1,6 +1,8 @@
 import { rmSync } from 'fs'
 import db from '../db/knex.js'
 import { startSession, stopSession } from '../services/whatsapp.service.js'
+import { timestamps, touch, scopeByBranch, findById } from '../utils/db.js'
+import { validateRequired } from '../utils/http.js'
 import { sessionDir } from '../utils/session-path.js'
 
 export async function list(req, res) {
@@ -9,7 +11,7 @@ export async function list(req, res) {
     .select('ch.*', 'b.name as branch_name')
 
   if (req.user.role === 'agent') {
-    q = q.where('ch.branch_id', req.user.branch_id)
+    q = scopeByBranch(q, req.user, 'ch.branch_id')
   } else if (branch_id) {
     q = q.where('ch.branch_id', branch_id)
   }
@@ -19,9 +21,8 @@ export async function list(req, res) {
 
 export async function create(req, res) {
   const { branch_id, type, name, identifier } = req.body
-  if (!branch_id || !type || !name || !identifier) {
-    return res.status(400).json({ error: 'branch_id, type, name e identifier son requeridos' })
-  }
+  if (!validateRequired(res, req.body, ['branch_id', 'type', 'name', 'identifier'],
+    'branch_id, type, name e identifier son requeridos')) return
 
   // identifier se usa para construir la ruta de la sesion: solo caracteres seguros
   if (type === 'whatsapp' && !/^[A-Za-z0-9._-]+$/.test(String(identifier))) {
@@ -32,10 +33,10 @@ export async function create(req, res) {
 
   const [id] = await db('channels').insert({
     branch_id, type, name, identifier, session_id,
-    status: 'inactive', created_at: new Date(), updated_at: new Date(),
+    status: 'inactive', ...timestamps(),
   })
 
-  const channel = await db('channels').where('id', id).first()
+  const channel = await findById('channels', id)
 
   if (type === 'whatsapp') {
     startSession(channel, req.io).catch(err => {
@@ -47,7 +48,7 @@ export async function create(req, res) {
 }
 
 export async function remove(req, res) {
-  const channel = await db('channels').where('id', req.params.id).first()
+  const channel = await findById('channels', req.params.id)
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
 
   if (channel.type === 'whatsapp' && channel.session_id) {
@@ -60,7 +61,7 @@ export async function remove(req, res) {
 
 
 export async function reconnect(req, res) {
-  const channel = await db('channels').where('id', req.params.id).first()
+  const channel = await findById('channels', req.params.id)
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
   if (channel.type !== 'whatsapp') return res.status(400).json({ error: 'Solo para canales WhatsApp' })
 
@@ -73,7 +74,7 @@ export async function reconnect(req, res) {
     }
   }
 
-  await db('channels').where('id', channel.id).update({ status: 'connecting', updated_at: new Date() })
+  await db('channels').where('id', channel.id).update(touch({ status: 'connecting' }))
   startSession(channel, req.io).catch(err => {
     console.error(`[Channel] Error reconectando sesion ${channel.session_id}:`, err.message)
   })
@@ -82,7 +83,7 @@ export async function reconnect(req, res) {
 }
 
 export async function getQr(req, res) {
-  const channel = await db('channels').where('id', req.params.id).first()
+  const channel = await findById('channels', req.params.id)
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
 
   let meta = {}

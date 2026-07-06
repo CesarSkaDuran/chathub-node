@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs'
 import db from './knex.js'
+import { timestamps } from '../utils/db.js'
 
 function ago(minutes) {
   const d = new Date()
@@ -18,7 +19,7 @@ export async function runSeed() {
   ]
   for (const b of branchData) {
     const exists = await db('branches').where('slug', b.slug).first()
-    if (!exists) await db('branches').insert({ ...b, created_at: new Date(), updated_at: new Date() })
+    if (!exists) await db('branches').insert({ ...b, ...timestamps() })
   }
   const norte  = await db('branches').where('slug', 'norte').first()
   const sur    = await db('branches').where('slug', 'sur').first()
@@ -36,7 +37,7 @@ export async function runSeed() {
   ]
   for (const u of usersData) {
     const exists = await db('users').where('email', u.email).first()
-    if (!exists) await db('users').insert({ ...u, password, is_active: true, created_at: new Date(), updated_at: new Date() })
+    if (!exists) await db('users').insert({ ...u, password, is_active: true, ...timestamps() })
   }
   const agentNorte  = await db('users').where('email', 'agente.norte@chathub.com').first()
   const agentSur    = await db('users').where('email', 'agente.sur@chathub.com').first()
@@ -53,7 +54,7 @@ export async function runSeed() {
   ]
   for (const ch of channelsData) {
     const exists = await db('channels').where('identifier', ch.identifier).first()
-    if (!exists) await db('channels').insert({ ...ch, status: 'inactive', created_at: new Date(), updated_at: new Date() })
+    if (!exists) await db('channels').insert({ ...ch, status: 'inactive', ...timestamps() })
   }
   const chNorte1 = await db('channels').where('identifier', '573001000001').first()
   const chNorte2 = await db('channels').where('identifier', '573001000002').first()
@@ -75,7 +76,7 @@ export async function runSeed() {
   for (const c of contactsData) {
     const where = c.phone ? { phone: c.phone } : { email: c.email }
     const exists = await db('contacts').where(where).first()
-    if (!exists) await db('contacts').insert({ ...c, created_at: new Date(), updated_at: new Date() })
+    if (!exists) await db('contacts').insert({ ...c, ...timestamps() })
   }
   const contacts = await db('contacts').orderBy('id')
   console.log('  ✓ contacts')
@@ -200,7 +201,7 @@ export async function runSeed() {
   for (const qr of quickReplies) {
     const exists = await db('quick_replies').where('shortcut', qr.shortcut)
       .where('branch_id', qr.branch_id ?? null).first()
-    if (!exists) await db('quick_replies').insert({ ...qr, created_at: new Date(), updated_at: new Date() })
+    if (!exists) await db('quick_replies').insert({ ...qr, ...timestamps() })
   }
 
   console.log('  ✓ conversations + messages')

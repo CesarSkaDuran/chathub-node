@@ -9,6 +9,7 @@ import { toDataURL } from 'qrcode'
 import pino from 'pino'
 import { mkdirSync } from 'fs'
 import db from '../db/knex.js'
+import { touch } from '../utils/db.js'
 import { processInboundMessage } from './inbound.service.js'
 import { sessionDir } from '../utils/session-path.js'
 
@@ -54,11 +55,10 @@ export async function startSession(channel, io) {
     try {
       if (qr) {
         const qrBase64 = await toDataURL(qr)
-        await db('channels').where('id', channelId).update({
+        await db('channels').where('id', channelId).update(touch({
           status: 'connecting',
           meta: JSON.stringify({ qr: qrBase64 }),
-          updated_at: new Date(),
-        })
+        }))
         // Emitir QR al frontend via Socket.io
         io.emit('channel:qr', { channel_id: channelId, qr: qrBase64 })
       }
@@ -66,9 +66,9 @@ export async function startSession(channel, io) {
       if (connection === 'open') {
         const session = sessions.get(session_id)
         if (session) session.status = 'active'
-        await db('channels').where('id', channelId).update({
-          status: 'active', meta: JSON.stringify({}), updated_at: new Date(),
-        })
+        await db('channels').where('id', channelId).update(touch({
+          status: 'active', meta: JSON.stringify({}),
+        }))
         io.emit('channel:status', { channel_id: channelId, status: 'active' })
         console.log(`[WhatsApp] Sesion activa: ${session_id}`)
       }
@@ -77,9 +77,7 @@ export async function startSession(channel, io) {
         const code = lastDisconnect?.error?.output?.statusCode
         const shouldReconnect = code !== DisconnectReason.loggedOut
 
-        await db('channels').where('id', channelId).update({
-          status: 'error', updated_at: new Date(),
-        })
+        await db('channels').where('id', channelId).update(touch({ status: 'error' }))
         io.emit('channel:status', { channel_id: channelId, status: 'error' })
         sessions.delete(session_id)
 
@@ -154,11 +152,10 @@ export async function startSession(channel, io) {
     for (const { key, receipt } of receipts) {
       try {
         const status = receipt.readTimestamp ? 'read' : 'delivered'
-        await db('messages').where('external_id', key.id).update({
+        await db('messages').where('external_id', key.id).update(touch({
           status,
           read_at: status === 'read' ? new Date() : null,
-          updated_at: new Date(),
-        })
+        }))
       } catch (err) {
         console.error(`[WhatsApp] Error actualizando recibo (${session_id}):`, err.message)
       }

@@ -1,4 +1,5 @@
 import db from '../db/knex.js'
+import { timestamps } from '../utils/db.js'
 
 /**
  * Procesa un mensaje entrante de cualquier canal.
@@ -29,8 +30,7 @@ export async function processInboundMessage(channel, payload, io) {
       media_url:       payload.media_url || null,
       media_mime_type: payload.media_mime_type || null,
       status:          'delivered',
-      created_at:      new Date(),
-      updated_at:      new Date(),
+      ...timestamps(),
     })
 
     // 5. Actualizar conversacion
@@ -68,58 +68,47 @@ export async function processInboundMessage(channel, payload, io) {
   }
 }
 
+/**
+ * Busca un contacto por `where`; si no existe lo crea con `data`.
+ */
+async function findOrCreateContact(where, data) {
+  let contact = await db('contacts').where(where).first()
+  if (!contact) {
+    const [id] = await db('contacts').insert({ ...data, ...timestamps() })
+    contact = await db('contacts').where('id', id).first()
+  }
+  return contact
+}
+
 async function resolveContact(channelType, payload) {
   switch (channelType) {
     case 'whatsapp': {
-      let contact = await db('contacts').where('phone', payload.from_phone).first()
-      if (!contact) {
-        const [id] = await db('contacts').insert({
-          phone: payload.from_phone,
-          name:  payload.from_name || payload.from_phone,
-          created_at: new Date(), updated_at: new Date(),
-        })
-        contact = await db('contacts').where('id', id).first()
-      } else if (payload.from_name && !contact.name) {
+      const contact = await findOrCreateContact(
+        { phone: payload.from_phone },
+        { phone: payload.from_phone, name: payload.from_name || payload.from_phone }
+      )
+      if (payload.from_name && !contact.name) {
         await db('contacts').where('id', contact.id).update({ name: payload.from_name })
         contact.name = payload.from_name
       }
       return contact
     }
-    case 'email': {
-      let contact = await db('contacts').where('email', payload.from_email).first()
-      if (!contact) {
-        const [id] = await db('contacts').insert({
-          email: payload.from_email,
-          name:  payload.from_name || payload.from_email,
-          created_at: new Date(), updated_at: new Date(),
-        })
-        contact = await db('contacts').where('id', id).first()
-      }
-      return contact
-    }
-    case 'instagram': {
-      let contact = await db('contacts').where('instagram_handle', payload.from_handle).first()
-      if (!contact) {
-        const [id] = await db('contacts').insert({
-          instagram_handle: payload.from_handle,
-          name: payload.from_name || payload.from_handle,
-          created_at: new Date(), updated_at: new Date(),
-        })
-        contact = await db('contacts').where('id', id).first()
-      }
-      return contact
-    }
+    case 'email':
+      return findOrCreateContact(
+        { email: payload.from_email },
+        { email: payload.from_email, name: payload.from_name || payload.from_email }
+      )
+    case 'instagram':
+      return findOrCreateContact(
+        { instagram_handle: payload.from_handle },
+        { instagram_handle: payload.from_handle, name: payload.from_name || payload.from_handle }
+      )
     default: {
       const identifier = payload.from || `webchat_${Date.now()}`
-      let contact = await db('contacts').where('phone', identifier).first()
-      if (!contact) {
-        const [id] = await db('contacts').insert({
-          phone: identifier, name: 'Visitante Web',
-          created_at: new Date(), updated_at: new Date(),
-        })
-        contact = await db('contacts').where('id', id).first()
-      }
-      return contact
+      return findOrCreateContact(
+        { phone: identifier },
+        { phone: identifier, name: 'Visitante Web' }
+      )
     }
   }
 }
@@ -138,8 +127,7 @@ async function resolveConversation(channelId, contactId) {
       contact_id:  contactId,
       status:      'pending',
       unread_count: 0,
-      created_at:  new Date(),
-      updated_at:  new Date(),
+      ...timestamps(),
     })
     conv = await db('conversations').where('id', id).first()
   }

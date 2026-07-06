@@ -1,9 +1,11 @@
 import db from '../db/knex.js'
+import { touch, scopeByBranch, findById } from '../utils/db.js'
+import { validateRequired, getPagination, paginated } from '../utils/http.js'
 import { loadAccessibleConversation } from '../utils/access.js'
 
 // Query base con joins
 function convQuery(user) {
-  let q = db('conversations as c')
+  const q = db('conversations as c')
     .join('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .leftJoin('users as ag', 'c.assigned_agent_id', 'ag.id')
@@ -15,16 +17,12 @@ function convQuery(user) {
     )
 
   // Agente: solo su sucursal
-  if (user.role === 'agent') {
-    q = q.where('ch.branch_id', user.branch_id)
-  }
-
-  return q
+  return scopeByBranch(q, user, 'ch.branch_id')
 }
 
 export async function list(req, res) {
-  const { status, channel_id, branch_id, search, page = 1, limit = 25 } = req.query
-  const offset = (Number(page) - 1) * Number(limit)
+  const { status, channel_id, branch_id, search } = req.query
+  const { page, limit, offset } = getPagination(req.query)
 
   let q = convQuery(req.user)
 
@@ -66,7 +64,7 @@ export async function list(req, res) {
     last_message: msgMap[r.id] || null,
   }))
 
-  res.json({ data, total: Number(countRow.total), page: Number(page), limit: Number(limit) })
+  res.json(paginated(data, countRow.total, page, limit))
 }
 
 export async function show(req, res) {
@@ -92,18 +90,17 @@ export async function show(req, res) {
 
 export async function assign(req, res) {
   const { agent_id } = req.body
-  if (!agent_id) return res.status(400).json({ error: 'agent_id requerido' })
+  if (!validateRequired(res, req.body, ['agent_id'], 'agent_id requerido')) return
 
   const { error } = await loadAccessibleConversation(req.user, req.params.id)
   if (error) return res.status(error.status).json({ error: error.message })
 
-  await db('conversations').where('id', req.params.id).update({
+  await db('conversations').where('id', req.params.id).update(touch({
     assigned_agent_id: agent_id,
     status: 'open',
-    updated_at: new Date(),
-  })
+  }))
 
-  const conv = await db('conversations').where('id', req.params.id).first()
+  const conv = await findById('conversations', req.params.id)
 
   // Emitir por Socket.io
   req.io.to(`branch_${conv.channel_id}`).emit('conversation:updated', conv)
@@ -119,11 +116,11 @@ export async function updateStatus(req, res) {
   const { error } = await loadAccessibleConversation(req.user, req.params.id)
   if (error) return res.status(error.status).json({ error: error.message })
 
-  const update = { status, updated_at: new Date() }
+  const update = touch({ status })
   if (status === 'resolved') update.resolved_at = new Date()
 
   await db('conversations').where('id', req.params.id).update(update)
-  const conv = await db('conversations').where('id', req.params.id).first()
+  const conv = await findById('conversations', req.params.id)
 
   req.io.to(`conv_${req.params.id}`).emit('conversation:updated', conv)
 
@@ -134,7 +131,7 @@ export async function markRead(req, res) {
   const { error } = await loadAccessibleConversation(req.user, req.params.id)
   if (error) return res.status(error.status).json({ error: error.message })
 
-  await db('conversations').where('id', req.params.id).update({ unread_count: 0, updated_at: new Date() })
+  await db('conversations').where('id', req.params.id).update(touch({ unread_count: 0 }))
   await db('messages').where('conversation_id', req.params.id).whereNull('read_at').update({ read_at: new Date() })
   res.json({ ok: true })
 }

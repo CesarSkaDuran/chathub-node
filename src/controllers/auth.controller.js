@@ -1,21 +1,14 @@
 import bcrypt from 'bcryptjs'
-import jwt from 'jsonwebtoken'
 import db from '../db/knex.js'
+import { validateRequired } from '../utils/http.js'
+import { userWithBranch, signToken } from '../utils/auth.js'
 
 export async function login(req, res) {
   const { email, password } = req.body
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email y password requeridos' })
-  }
+  if (!validateRequired(res, req.body, ['email', 'password'], 'Email y password requeridos')) return
 
-  const user = await db('users')
-    .leftJoin('branches', 'users.branch_id', 'branches.id')
-    .select(
-      'users.id', 'users.name', 'users.email', 'users.password',
-      'users.role', 'users.branch_id', 'users.is_active',
-      'branches.name as branch_name', 'branches.slug as branch_slug'
-    )
+  const user = await userWithBranch({ withPassword: true })
     .where('users.email', email)
     .first()
 
@@ -27,11 +20,7 @@ export async function login(req, res) {
 
   await db('users').where('id', user.id).update({ last_seen_at: new Date() })
 
-  const token = jwt.sign(
-    { id: user.id, role: user.role, branch_id: user.branch_id },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-  )
+  const token = signToken(user)
 
   const { password: _, ...userSafe } = user
 

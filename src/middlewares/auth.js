@@ -1,5 +1,4 @@
-import jwt from 'jsonwebtoken'
-import db from '../db/knex.js'
+import { userWithBranch, verifyToken } from '../utils/auth.js'
 
 export async function authMiddleware(req, res, next) {
   const header = req.headers.authorization
@@ -10,14 +9,8 @@ export async function authMiddleware(req, res, next) {
   const token = header.slice(7)
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET)
-    const user = await db('users')
-      .leftJoin('branches', 'users.branch_id', 'branches.id')
-      .select(
-        'users.id', 'users.name', 'users.email',
-        'users.role', 'users.branch_id', 'users.is_active',
-        'branches.name as branch_name', 'branches.slug as branch_slug'
-      )
+    const payload = verifyToken(token)
+    const user = await userWithBranch()
       .where('users.id', payload.id)
       .first()
 
