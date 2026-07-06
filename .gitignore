@@ -6,6 +6,7 @@
 *.log
 node_modules
 sessions
+coverage
 # Include when developing application packages.
 pubspec.lock
 .c9
