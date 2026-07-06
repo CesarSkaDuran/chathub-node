@@ -1,3 +1,5 @@
+import { rmSync } from 'fs'
+import { join } from 'path'
 import db from '../db/knex.js'
 import { startSession, stopSession } from '../services/whatsapp.service.js'
 
@@ -31,7 +33,9 @@ export async function create(req, res) {
   const channel = await db('channels').where('id', id).first()
 
   if (type === 'whatsapp') {
-    startSession(channel, req.io)
+    startSession(channel, req.io).catch(err => {
+      console.error(`[Channel] Error iniciando sesion ${channel.session_id}:`, err.message)
+    })
   }
 
   res.status(201).json(channel)
@@ -59,11 +63,15 @@ export async function reconnect(req, res) {
   if (channel.session_id) {
     try {
       rmSync(join('./sessions', channel.session_id), { recursive: true, force: true })
-    } catch (_) {}
+    } catch (err) {
+      console.error(`[Channel] No se pudo borrar la sesion ${channel.session_id}:`, err.message)
+    }
   }
 
   await db('channels').where('id', channel.id).update({ status: 'connecting', updated_at: new Date() })
-  startSession(channel, req.io)
+  startSession(channel, req.io).catch(err => {
+    console.error(`[Channel] Error reconectando sesion ${channel.session_id}:`, err.message)
+  })
 
   res.json({ message: 'Reconexion iniciada' })
 }
@@ -72,6 +80,13 @@ export async function getQr(req, res) {
   const channel = await db('channels').where('id', req.params.id).first()
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
 
-  const meta = channel.meta ? JSON.parse(channel.meta) : {}
+  let meta = {}
+  if (channel.meta) {
+    try {
+      meta = typeof channel.meta === 'string' ? JSON.parse(channel.meta) : channel.meta
+    } catch (err) {
+      console.error(`[Channel] meta invalida para canal ${channel.id}:`, err.message)
+    }
+  }
   res.json({ status: channel.status, qr: meta.qr || null })
 }

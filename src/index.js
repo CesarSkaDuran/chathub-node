@@ -10,6 +10,7 @@ import { runMigrations } from './db/migrations.js'
 import { runSeed } from './db/seed.js'
 import { restoreAllSessions } from './services/whatsapp.service.js'
 import routes from './routes/index.js'
+import { errorHandler, notFoundHandler } from './middlewares/errorHandler.js'
 
 const app    = express()
 const server = createServer(app)
@@ -34,6 +35,10 @@ app.use((req, _res, next) => { req.io = io; next() })
 app.use('/api', routes)
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', time: new Date() }))
+
+// ── Manejo de errores (debe ir despues de las rutas) ───────────────────────────
+app.use('/api', notFoundHandler)
+app.use(errorHandler)
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 io.use((socket, next) => {
@@ -110,13 +115,29 @@ async function bootstrap() {
       console.log(`✓ Socket.io activo`)
     })
 
-    // Restaurar sesiones WhatsApp activas
-    await restoreAllSessions(io)
+    // Restaurar sesiones WhatsApp activas. Un fallo aqui NO debe tumbar el
+    // servidor ya iniciado, por eso se maneja el error de forma aislada.
+    try {
+      await restoreAllSessions(io)
+    } catch (err) {
+      console.error('Error restaurando sesiones WhatsApp:', err)
+    }
 
   } catch (err) {
-    console.error('Error al iniciar:', err.message)
+    console.error('Error al iniciar:', err)
     process.exit(1)
   }
 }
+
+// ── Salvaguardas globales ──────────────────────────────────────────────────────
+// Registran errores que de otro modo pasarian desapercibidos en vez de dejar
+// el proceso en un estado indeterminado silenciosamente.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err)
+})
 
 bootstrap()

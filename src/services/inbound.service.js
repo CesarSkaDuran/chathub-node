@@ -60,7 +60,11 @@ export async function processInboundMessage(channel, payload, io) {
 
     return message
   } catch (err) {
-    console.error('[InboundService] Error procesando mensaje:', err.message)
+    // Registrar el error completo (con stack) para no perder contexto.
+    // Se relanza para que el llamador decida como reaccionar en vez de
+    // tragarse el fallo silenciosamente.
+    console.error('[InboundService] Error procesando mensaje entrante:', err)
+    throw err
   }
 }
 
