@@ -8,9 +8,9 @@ import {
 import { toDataURL } from 'qrcode'
 import pino from 'pino'
 import { mkdirSync } from 'fs'
-import { join } from 'path'
 import db from '../db/knex.js'
 import { processInboundMessage } from './inbound.service.js'
+import { sessionDir } from '../utils/session-path.js'
 
 const logger = pino({ level: 'silent' })
 const sessions = new Map() // session_id => { sock, status }
@@ -27,7 +27,7 @@ export async function startSession(channel, io) {
     await stopSession(session_id)
   }
 
-  const authDir = join('./sessions', session_id)
+  const authDir = sessionDir(session_id)
   mkdirSync(authDir, { recursive: true })
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
