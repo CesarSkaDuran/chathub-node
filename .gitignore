@@ -26,6 +26,13 @@ modules/.vscode
 
 # Don't check in secret files
 *secret.js
+.env
+.env.*
+!.env.example
+
+# WhatsApp / Baileys session credentials (never commit)
+sessions/
+sessions
 
 # Ignore npm/yarn debug log
 npm-debug.log

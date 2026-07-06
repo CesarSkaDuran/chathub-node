@@ -14,7 +14,20 @@ import routes from './routes/index.js'
 const app    = express()
 const server = createServer(app)
 const isDev  = process.env.NODE_ENV !== 'production'
-const corsOrigin =  '*';
+
+// Fallar rapido si el secreto JWT no esta configurado o es inseguro.
+const JWT_SECRET = process.env.JWT_SECRET
+const WEAK_SECRETS = new Set(['', 'cambia-este-secret-en-produccion', 'secret', 'changeme'])
+if (!JWT_SECRET || WEAK_SECRETS.has(JWT_SECRET) || JWT_SECRET.length < 32) {
+  console.error('FATAL: JWT_SECRET no configurado o inseguro. Define un valor aleatorio de >=32 caracteres en .env')
+  process.exit(1)
+}
+
+// Origenes permitidos para CORS, tomados de la config (coma-separados).
+const corsOrigin = (process.env.CORS_ORIGIN || 'http://localhost:4200')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean)
 
 const io     = new SocketIO(server, {
   cors: { origin: corsOrigin, methods: ['GET', 'POST', 'PUT', 'DELETE'] },
