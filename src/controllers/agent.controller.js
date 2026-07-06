@@ -1,5 +1,7 @@
 import bcrypt from 'bcryptjs'
 import db from '../db/knex.js'
+import { timestamps, touch, scopeByBranch } from '../utils/db.js'
+import { validateRequired } from '../utils/http.js'
 
 export async function list(req, res) {
   const { branch_id } = req.query
@@ -9,7 +11,7 @@ export async function list(req, res) {
             'u.branch_id', 'b.name as branch_name')
 
   if (req.user.role === 'agent') {
-    q = q.where('u.branch_id', req.user.branch_id)
+    q = scopeByBranch(q, req.user, 'u.branch_id')
   } else if (branch_id) {
     q = q.where('u.branch_id', branch_id)
   }
@@ -19,9 +21,8 @@ export async function list(req, res) {
 
 export async function create(req, res) {
   const { name, email, password, role, branch_id } = req.body
-  if (!name || !email || !password || !role || !branch_id) {
-    return res.status(400).json({ error: 'Todos los campos son requeridos' })
-  }
+  if (!validateRequired(res, req.body, ['name', 'email', 'password', 'role', 'branch_id'],
+    'Todos los campos son requeridos')) return
 
   const exists = await db('users').where('email', email).first()
   if (exists) return res.status(409).json({ error: 'El email ya esta registrado' })
@@ -29,7 +30,7 @@ export async function create(req, res) {
   const hashed = await bcrypt.hash(password, 10)
   const [id] = await db('users').insert({
     name, email, password: hashed, role, branch_id,
-    is_active: true, created_at: new Date(), updated_at: new Date(),
+    is_active: true, ...timestamps(),
   })
 
   const user = await db('users').where('id', id).select('id', 'name', 'email', 'role', 'branch_id').first()
@@ -38,7 +39,7 @@ export async function create(req, res) {
 
 export async function update(req, res) {
   const { name, branch_id, role, is_active, password } = req.body
-  const data = { updated_at: new Date() }
+  const data = touch()
 
   if (name)      data.name      = name
   if (branch_id) data.branch_id = branch_id

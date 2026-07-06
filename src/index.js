@@ -3,9 +3,9 @@ import express from 'express'
 import { createServer } from 'http'
 import { Server as SocketIO } from 'socket.io'
 import cors from 'cors'
-import jwt from 'jsonwebtoken'
 
 import db from './db/knex.js'
+import { verifyToken } from './utils/auth.js'
 import { runMigrations } from './db/migrations.js'
 import { runSeed } from './db/seed.js'
 import { restoreAllSessions } from './services/whatsapp.service.js'
@@ -41,7 +41,7 @@ io.use((socket, next) => {
   const token = socket.handshake.auth?.token
   if (!token) return next(new Error('Token requerido'))
   try {
-    socket.user = jwt.verify(token, process.env.JWT_SECRET)
+    socket.user = verifyToken(token)
     next()
   } catch {
     next(new Error('Token invalido'))

@@ -1,21 +1,22 @@
 import db from '../db/knex.js'
 import { sendWhatsApp } from '../services/whatsapp.service.js'
+import { timestamps, touch, findById } from '../utils/db.js'
+import { validateRequired, getPagination, paginated } from '../utils/http.js'
 
 export async function history(req, res) {
-  const { page = 1, limit = 50 } = req.query
-  const offset = (Number(page) - 1) * Number(limit)
+  const { page, limit, offset } = getPagination(req.query, { limit: 50 })
 
   const messages = await db('messages as m')
     .leftJoin('users as u', 'm.sender_user_id', 'u.id')
     .select('m.*', 'u.name as sender_name')
     .where('m.conversation_id', req.params.id)
     .orderBy('m.created_at', 'asc')
-    .limit(Number(limit))
+    .limit(limit)
     .offset(offset)
 
   const [{ total }] = await db('messages').where('conversation_id', req.params.id).count('id as total')
 
-  res.json({ data: messages, total: Number(total), page: Number(page), limit: Number(limit) })
+  res.json(paginated(messages, total, page, limit))
 }
 
 export async function send(req, res) {
@@ -46,16 +47,12 @@ export async function send(req, res) {
     body:            body || null,
     media_url:       media_url || null,
     status:          'sent',
-    created_at:      new Date(),
-    updated_at:      new Date(),
+    ...timestamps(),
   })
 
-  await db('conversations').where('id', convId).update({
-    last_message_at: new Date(),
-    updated_at:      new Date(),
-  })
+  await db('conversations').where('id', convId).update(touch({ last_message_at: new Date() }))
 
-  const message = await db('messages').where('id', msgId).first()
+  const message = await findById('messages', msgId)
 
   // Enviar por el canal correspondiente
   if (conv.channel_type === 'whatsapp' && conv.session_id) {
@@ -80,13 +77,12 @@ export async function send(req, res) {
 
 export async function updateStatus(req, res) {
   const { external_id, status } = req.body
-  if (!external_id || !status) return res.status(400).json({ error: 'external_id y status requeridos' })
+  if (!validateRequired(res, req.body, ['external_id', 'status'], 'external_id y status requeridos')) return
 
-  const updated = await db('messages').where('external_id', external_id).update({
+  const updated = await db('messages').where('external_id', external_id).update(touch({
     status,
     read_at: status === 'read' ? new Date() : null,
-    updated_at: new Date(),
-  })
+  }))
 
   res.json({ updated: updated > 0 })
 }

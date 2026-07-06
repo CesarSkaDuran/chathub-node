@@ -1,4 +1,5 @@
 import db from '../db/knex.js'
+import { scopeByBranch } from '../utils/db.js'
 
 export async function stats(req, res) {
   const user  = req.user
@@ -6,9 +7,8 @@ export async function stats(req, res) {
 
   // Base query filtrada por rol
   function base() {
-    let q = db('conversations as c').join('channels as ch', 'c.channel_id', 'ch.id')
-    if (user.role === 'agent') q = q.where('ch.branch_id', user.branch_id)
-    return q
+    const q = db('conversations as c').join('channels as ch', 'c.channel_id', 'ch.id')
+    return scopeByBranch(q, user, 'ch.branch_id')
   }
 
   const [open]       = await base().where('c.status', 'open').count('c.id as n')
@@ -20,7 +20,7 @@ export async function stats(req, res) {
     .join('conversations as c', 'm.conversation_id', 'c.id')
     .join('channels as ch', 'c.channel_id', 'ch.id')
     .where('m.created_at', '>=', today)
-    .modify(q => { if (user.role === 'agent') q.where('ch.branch_id', user.branch_id) })
+    .modify(q => scopeByBranch(q, user, 'ch.branch_id'))
     .count('m.id as n')
 
   const byChannel = await db('channels as ch')
@@ -29,7 +29,7 @@ export async function stats(req, res) {
     })
     .select('ch.id', 'ch.name', 'ch.type', 'ch.status as channel_status')
     .count('c.id as open_count')
-    .modify(q => { if (user.role === 'agent') q.where('ch.branch_id', user.branch_id) })
+    .modify(q => scopeByBranch(q, user, 'ch.branch_id'))
     .groupBy('ch.id')
     .orderBy('ch.name')
 

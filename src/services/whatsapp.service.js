@@ -10,6 +10,7 @@ import pino from 'pino'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import db from '../db/knex.js'
+import { touch } from '../utils/db.js'
 import { processInboundMessage } from './inbound.service.js'
 
 const logger = pino({ level: 'silent' })
@@ -53,20 +54,19 @@ export async function startSession(channel, io) {
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       const qrBase64 = await toDataURL(qr)
-      await db('channels').where('id', channelId).update({
+      await db('channels').where('id', channelId).update(touch({
         status: 'connecting',
         meta: JSON.stringify({ qr: qrBase64 }),
-        updated_at: new Date(),
-      })
+      }))
       // Emitir QR al frontend via Socket.io
       io.emit('channel:qr', { channel_id: channelId, qr: qrBase64 })
     }
 
     if (connection === 'open') {
       sessions.get(session_id).status = 'active'
-      await db('channels').where('id', channelId).update({
-        status: 'active', meta: JSON.stringify({}), updated_at: new Date(),
-      })
+      await db('channels').where('id', channelId).update(touch({
+        status: 'active', meta: JSON.stringify({}),
+      }))
       io.emit('channel:status', { channel_id: channelId, status: 'active' })
       console.log(`[WhatsApp] Sesion activa: ${session_id}`)
     }
@@ -75,9 +75,7 @@ export async function startSession(channel, io) {
       const code = lastDisconnect?.error?.output?.statusCode
       const shouldReconnect = code !== DisconnectReason.loggedOut
 
-      await db('channels').where('id', channelId).update({
-        status: 'error', updated_at: new Date(),
-      })
+      await db('channels').where('id', channelId).update(touch({ status: 'error' }))
       io.emit('channel:status', { channel_id: channelId, status: 'error' })
       sessions.delete(session_id)
 
@@ -140,11 +138,10 @@ export async function startSession(channel, io) {
   sock.ev.on('message-receipt.update', async (receipts) => {
     for (const { key, receipt } of receipts) {
       const status = receipt.readTimestamp ? 'read' : 'delivered'
-      await db('messages').where('external_id', key.id).update({
+      await db('messages').where('external_id', key.id).update(touch({
         status,
         read_at: status === 'read' ? new Date() : null,
-        updated_at: new Date(),
-      })
+      }))
     }
   })
 
