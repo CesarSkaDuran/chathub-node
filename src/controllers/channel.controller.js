@@ -1,9 +1,9 @@
 import { rmSync } from 'fs'
-import { join } from 'path'
 import db from '../db/knex.js'
 import { startSession, stopSession } from '../services/whatsapp.service.js'
 import { timestamps, touch, scopeByBranch, findById } from '../utils/db.js'
 import { validateRequired } from '../utils/http.js'
+import { sessionDir } from '../utils/session-path.js'
 
 export async function list(req, res) {
   const { branch_id } = req.query
@@ -23,6 +23,11 @@ export async function create(req, res) {
   const { branch_id, type, name, identifier } = req.body
   if (!validateRequired(res, req.body, ['branch_id', 'type', 'name', 'identifier'],
     'branch_id, type, name e identifier son requeridos')) return
+
+  // identifier se usa para construir la ruta de la sesion: solo caracteres seguros
+  if (type === 'whatsapp' && !/^[A-Za-z0-9._-]+$/.test(String(identifier))) {
+    return res.status(400).json({ error: 'identifier invalido' })
+  }
 
   const session_id = type === 'whatsapp' ? `session_${identifier}` : null
 
@@ -58,10 +63,10 @@ export async function reconnect(req, res) {
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
   if (channel.type !== 'whatsapp') return res.status(400).json({ error: 'Solo para canales WhatsApp' })
 
-  // ✅ BORRAR sesión vieja para forzar nuevo QR
+  // Borrar sesión vieja para forzar nuevo QR
   if (channel.session_id) {
     try {
-      rmSync(join('./sessions', channel.session_id), { recursive: true, force: true })
+      rmSync(sessionDir(channel.session_id), { recursive: true, force: true })
     } catch (_) {}
   }
 

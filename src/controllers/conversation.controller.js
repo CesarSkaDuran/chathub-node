@@ -1,6 +1,7 @@
 import db from '../db/knex.js'
 import { touch, scopeByBranch, findById } from '../utils/db.js'
 import { validateRequired, getPagination, paginated } from '../utils/http.js'
+import { loadAccessibleConversation } from '../utils/access.js'
 
 // Query base con joins
 function convQuery(user) {
@@ -91,6 +92,9 @@ export async function assign(req, res) {
   const { agent_id } = req.body
   if (!validateRequired(res, req.body, ['agent_id'], 'agent_id requerido')) return
 
+  const { error } = await loadAccessibleConversation(req.user, req.params.id)
+  if (error) return res.status(error.status).json({ error: error.message })
+
   await db('conversations').where('id', req.params.id).update(touch({
     assigned_agent_id: agent_id,
     status: 'open',
@@ -109,6 +113,9 @@ export async function updateStatus(req, res) {
   const allowed = ['open', 'pending', 'resolved', 'snoozed']
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Estado invalido' })
 
+  const { error } = await loadAccessibleConversation(req.user, req.params.id)
+  if (error) return res.status(error.status).json({ error: error.message })
+
   const update = touch({ status })
   if (status === 'resolved') update.resolved_at = new Date()
 
@@ -121,6 +128,9 @@ export async function updateStatus(req, res) {
 }
 
 export async function markRead(req, res) {
+  const { error } = await loadAccessibleConversation(req.user, req.params.id)
+  if (error) return res.status(error.status).json({ error: error.message })
+
   await db('conversations').where('id', req.params.id).update(touch({ unread_count: 0 }))
   await db('messages').where('conversation_id', req.params.id).whereNull('read_at').update({ read_at: new Date() })
   res.json({ ok: true })
