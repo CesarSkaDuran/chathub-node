@@ -52,39 +52,48 @@ export async function startSession(channel, io) {
 
   // ── Estado de conexion
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      const qrBase64 = await toDataURL(qr)
-      await db('channels').where('id', channelId).update(touch({
-        status: 'connecting',
-        meta: JSON.stringify({ qr: qrBase64 }),
-      }))
-      // Emitir QR al frontend via Socket.io
-      io.emit('channel:qr', { channel_id: channelId, qr: qrBase64 })
-    }
-
-    if (connection === 'open') {
-      sessions.get(session_id).status = 'active'
-      await db('channels').where('id', channelId).update(touch({
-        status: 'active', meta: JSON.stringify({}),
-      }))
-      io.emit('channel:status', { channel_id: channelId, status: 'active' })
-      console.log(`[WhatsApp] Sesion activa: ${session_id}`)
-    }
-
-    if (connection === 'close') {
-      const code = lastDisconnect?.error?.output?.statusCode
-      const shouldReconnect = code !== DisconnectReason.loggedOut
-
-      await db('channels').where('id', channelId).update(touch({ status: 'error' }))
-      io.emit('channel:status', { channel_id: channelId, status: 'error' })
-      sessions.delete(session_id)
-
-      if (shouldReconnect) {
-        console.log(`[WhatsApp] Reconectando ${session_id} en 5s...`)
-        setTimeout(() => startSession(channel, io), 5000)
-      } else {
-        console.log(`[WhatsApp] Sesion cerrada (logout): ${session_id}`)
+    try {
+      if (qr) {
+        const qrBase64 = await toDataURL(qr)
+        await db('channels').where('id', channelId).update(touch({
+          status: 'connecting',
+          meta: JSON.stringify({ qr: qrBase64 }),
+        }))
+        // Emitir QR al frontend via Socket.io
+        io.emit('channel:qr', { channel_id: channelId, qr: qrBase64 })
       }
+
+      if (connection === 'open') {
+        const session = sessions.get(session_id)
+        if (session) session.status = 'active'
+        await db('channels').where('id', channelId).update(touch({
+          status: 'active', meta: JSON.stringify({}),
+        }))
+        io.emit('channel:status', { channel_id: channelId, status: 'active' })
+        console.log(`[WhatsApp] Sesion activa: ${session_id}`)
+      }
+
+      if (connection === 'close') {
+        const code = lastDisconnect?.error?.output?.statusCode
+        const shouldReconnect = code !== DisconnectReason.loggedOut
+
+        await db('channels').where('id', channelId).update(touch({ status: 'error' }))
+        io.emit('channel:status', { channel_id: channelId, status: 'error' })
+        sessions.delete(session_id)
+
+        if (shouldReconnect) {
+          console.log(`[WhatsApp] Reconectando ${session_id} en 5s...`)
+          setTimeout(() => {
+            startSession(channel, io).catch(err => {
+              console.error(`[WhatsApp] Error reconectando ${session_id}:`, err.message)
+            })
+          }, 5000)
+        } else {
+          console.log(`[WhatsApp] Sesion cerrada (logout): ${session_id}`)
+        }
+      }
+    } catch (err) {
+      console.error(`[WhatsApp] Error en connection.update (${session_id}):`, err)
     }
   })
 
@@ -93,6 +102,7 @@ export async function startSession(channel, io) {
     if (type !== 'notify') return
 
     for (const msg of messages) {
+     try {
       if (msg.key.fromMe) continue
       const jid = msg.key.remoteJid
       if (!jid || jid.endsWith('@g.us')) continue // ignorar grupos
@@ -131,17 +141,24 @@ export async function startSession(channel, io) {
         media_url:       mediaUrl,
         media_mime_type: mimeType,
       }, io)
+     } catch (err) {
+      console.error(`[WhatsApp] Error procesando mensaje entrante (${session_id}):`, err)
+     }
     }
   })
 
   // ── Actualizacion de estado (leido, entregado)
   sock.ev.on('message-receipt.update', async (receipts) => {
     for (const { key, receipt } of receipts) {
-      const status = receipt.readTimestamp ? 'read' : 'delivered'
-      await db('messages').where('external_id', key.id).update(touch({
-        status,
-        read_at: status === 'read' ? new Date() : null,
-      }))
+      try {
+        const status = receipt.readTimestamp ? 'read' : 'delivered'
+        await db('messages').where('external_id', key.id).update(touch({
+          status,
+          read_at: status === 'read' ? new Date() : null,
+        }))
+      } catch (err) {
+        console.error(`[WhatsApp] Error actualizando recibo (${session_id}):`, err.message)
+      }
     }
   })
 
@@ -195,6 +212,11 @@ export async function restoreAllSessions(io) {
   const channels = await db('channels').where('type', 'whatsapp').whereNotNull('session_id')
   console.log(`Restaurando ${channels.length} sesiones WhatsApp...`)
   for (const ch of channels) {
-    await startSession(ch, io)
+    // Aislar cada sesion: un fallo al restaurar una no debe impedir las demas.
+    try {
+      await startSession(ch, io)
+    } catch (err) {
+      console.error(`[WhatsApp] Error restaurando sesion ${ch.session_id}:`, err.message)
+    }
   }
 }

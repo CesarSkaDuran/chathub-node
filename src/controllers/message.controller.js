@@ -63,15 +63,24 @@ export async function send(req, res) {
 
   const message = await findById('messages', msgId)
 
-  // Enviar por el canal correspondiente
+  // Enviar por el canal correspondiente.
+  // El envio es fire-and-forget (ya respondimos 201), pero cada actualizacion
+  // posterior del estado del mensaje debe esperarse y manejar sus propios
+  // errores para no dejar promesas rechazadas sin capturar.
   if (conv.channel_type === 'whatsapp' && conv.session_id) {
     sendWhatsApp(conv.session_id, conv.phone, { type, body, media_url })
-      .then(extId => {
-        if (extId) db('messages').where('id', msgId).update({ external_id: extId, status: 'delivered' })
+      .then(async extId => {
+        if (extId) {
+          await db('messages').where('id', msgId).update({ external_id: extId, status: 'delivered' })
+        }
       })
-      .catch(err => {
+      .catch(async err => {
         console.error('Error enviando WhatsApp:', err.message)
-        db('messages').where('id', msgId).update({ status: 'failed' })
+        try {
+          await db('messages').where('id', msgId).update({ status: 'failed' })
+        } catch (dbErr) {
+          console.error('Error marcando mensaje como fallido:', dbErr.message)
+        }
       })
   }
 
