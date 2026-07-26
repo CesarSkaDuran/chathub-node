@@ -2,9 +2,9 @@ import { Router } from 'express'
 import { authMiddleware, requireRole } from '../middlewares/auth.js'
 
 import { login, logout, me } from '../controllers/auth.controller.js'
-import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead } from '../controllers/conversation.controller.js'
+import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv } from '../controllers/conversation.controller.js'
 import { history, send, updateStatus as msgStatus } from '../controllers/message.controller.js'
-import { list as listChannels, create as createChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
+import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
 
@@ -24,6 +24,7 @@ router.get('/conversations/:id',                    authMiddleware, showConv)
 router.put('/conversations/:id/assign',             authMiddleware, assign)
 router.put('/conversations/:id/status',             authMiddleware, convStatus)
 router.put('/conversations/:id/read',               authMiddleware, markRead)
+router.delete('/conversations/:id',                 authMiddleware, requireRole('admin'), removeConv)
 
 // ── Mensajes ──────────────────────────────────────────────────────────────────
 router.get('/conversations/:id/messages',           authMiddleware, history)
@@ -32,6 +33,7 @@ router.post('/conversations/:id/messages',          authMiddleware, send)
 // ── Canales (admin / supervisor) ──────────────────────────────────────────────
 router.get('/channels',                             authMiddleware, listChannels)
 router.post('/channels',                            authMiddleware, requireRole('admin', 'supervisor'), createChannel)
+router.put('/channels/:id',                         authMiddleware, requireRole('admin', 'supervisor'), updateChannel)
 router.delete('/channels/:id',                      authMiddleware, requireRole('admin', 'supervisor'), removeChannel)
 router.post('/channels/:id/reconnect',              authMiddleware, requireRole('admin', 'supervisor'), reconnect)
 router.get('/channels/:id/qr',                      authMiddleware, requireRole('admin', 'supervisor'), getQr)

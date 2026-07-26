@@ -57,8 +57,11 @@ export async function runMigrations() {
       t.string('email', 150).nullable().index()
       t.string('instagram_handle', 100).nullable()
       t.string('avatar_url', 500).nullable()
+      t.string('whatsapp_lid', 50).nullable().index()
       t.json('meta').nullable()
       t.timestamps(true, true)
+      t.unique('phone')
+      t.unique('whatsapp_lid')
     })
     console.log('  ✓ contacts')
   }
@@ -78,6 +81,7 @@ export async function runMigrations() {
       t.timestamps(true, true)
       t.index(['channel_id', 'status'])
       t.index('last_message_at')
+      t.unique(['channel_id', 'contact_id'])
     })
     console.log('  ✓ conversations')
   }
@@ -115,5 +119,78 @@ export async function runMigrations() {
     console.log('  ✓ quick_replies')
   }
 
+  // Migraciones incrementales para tablas existentes
+  await runIncrementalMigrations()
+
   console.log('Migraciones completadas.')
+}
+
+async function runIncrementalMigrations() {
+  // 1. Agregar columna whatsapp_lid a contacts si no existe
+  if (await db.schema.hasTable('contacts') && !await db.schema.hasColumn('contacts', 'whatsapp_lid')) {
+    await db.schema.table('contacts', t => {
+      t.string('whatsapp_lid', 50).nullable().index()
+    })
+    console.log('  ✓ contacts.whatsapp_lid agregado')
+  }
+
+  // 2. Migrar whatsapp_lid desde meta a columna dedicada
+  const contactsWithLid = await db('contacts')
+    .whereNotNull('meta')
+    .where('meta', 'like', '%"whatsapp_lid"%')
+    .whereNull('whatsapp_lid')
+
+  for (const contact of contactsWithLid) {
+    try {
+      const meta = typeof contact.meta === 'string' ? JSON.parse(contact.meta) : contact.meta
+      if (meta.whatsapp_lid) {
+        await db('contacts').where('id', contact.id).update({ whatsapp_lid: meta.whatsapp_lid })
+      }
+    } catch (_) {}
+  }
+  if (contactsWithLid.length) {
+    console.log(`  ✓ Migrados ${contactsWithLid.length} whatsapp_lid desde meta`)
+  }
+
+  // 3. Agregar índice único en contacts.phone si no existe
+  const phoneIndex = await getIndexInfo('contacts', 'contacts_phone_unique')
+  if (!phoneIndex) {
+    try {
+      await db.schema.table('contacts', t => t.unique('phone'))
+      console.log('  ✓ Índice único contacts.phone agregado')
+    } catch (err) {
+      console.warn('  ⚠ No se pudo agregar índice único contacts.phone:', err.message)
+    }
+  }
+
+  // 4. Agregar índice único en contacts.whatsapp_lid si no existe
+  const lidIndex = await getIndexInfo('contacts', 'contacts_whatsapp_lid_unique')
+  if (!lidIndex) {
+    try {
+      await db.schema.table('contacts', t => t.unique('whatsapp_lid'))
+      console.log('  ✓ Índice único contacts.whatsapp_lid agregado')
+    } catch (err) {
+      console.warn('  ⚠ No se pudo agregar índice único contacts.whatsapp_lid:', err.message)
+    }
+  }
+
+  // 5. Agregar índice único en conversations (channel_id, contact_id) si no existe
+  const convIndex = await getIndexInfo('conversations', 'conversations_channel_id_contact_id_unique')
+  if (!convIndex) {
+    try {
+      await db.schema.table('conversations', t => t.unique(['channel_id', 'contact_id']))
+      console.log('  ✓ Índice único conversations (channel_id, contact_id) agregado')
+    } catch (err) {
+      console.warn('  ⚠ No se pudo agregar índice único conversations:', err.message)
+    }
+  }
+}
+
+async function getIndexInfo(table, indexName) {
+  try {
+    const result = await db.raw(`SHOW INDEX FROM ${table} WHERE Key_name = ?`, [indexName])
+    return result?.[0]?.length > 0 ? result[0][0] : null
+  } catch {
+    return null
+  }
 }

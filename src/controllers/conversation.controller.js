@@ -22,13 +22,14 @@ function convQuery(user) {
 }
 
 export async function list(req, res) {
-  const { status, channel_id, branch_id, search, page = 1, limit = 25 } = req.query
+  const { status, channel_id, channel_type, branch_id, search, page = 1, limit = 25 } = req.query
   const offset = (Number(page) - 1) * Number(limit)
 
   let q = convQuery(req.user)
 
-  if (status)     q = q.where('c.status', status)
-  if (channel_id) q = q.where('c.channel_id', channel_id)
+  if (status)       q = q.where('c.status', status)
+  if (channel_id)   q = q.where('c.channel_id', channel_id)
+  if (channel_type) q = q.where('ch.type', channel_type)
   if (branch_id && req.user.role !== 'agent') q = q.where('ch.branch_id', branch_id)
   if (search) {
     q = q.where(function () {
@@ -99,10 +100,18 @@ export async function assign(req, res) {
     updated_at: new Date(),
   })
 
-  const conv = await db('conversations').where('id', req.params.id).first()
+  const conv = await db('conversations as c')
+    .join('channels as ch', 'c.channel_id', 'ch.id')
+    .join('contacts as ct', 'c.contact_id', 'ct.id')
+    .leftJoin('users as ag', 'c.assigned_agent_id', 'ag.id')
+    .select('c.*', 'ch.type as channel_type', 'ch.name as channel_name', 'ch.branch_id',
+            'ct.name as contact_name', 'ct.phone', 'ct.email as contact_email',
+            'ag.name as agent_name')
+    .where('c.id', req.params.id)
+    .first()
 
-  // Emitir por Socket.io
-  req.io.to(`branch_${conv.channel_id}`).emit('conversation:updated', conv)
+  // Emitir por Socket.io al room de la sucursal correcta
+  req.io.to(`branch_${conv.branch_id}`).emit('conversation:updated', conv)
 
   res.json(conv)
 }
@@ -127,4 +136,22 @@ export async function markRead(req, res) {
   await db('conversations').where('id', req.params.id).update({ unread_count: 0, updated_at: new Date() })
   await db('messages').where('conversation_id', req.params.id).whereNull('read_at').update({ read_at: new Date() })
   res.json({ ok: true })
+}
+
+export async function remove(req, res) {
+  // Solo admin puede eliminar conversaciones
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Solo administradores pueden eliminar conversaciones' })
+  }
+
+  const conv = await db('conversations').where('id', req.params.id).first()
+  if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
+
+  // Eliminar mensajes de la conversación
+  await db('messages').where('conversation_id', req.params.id).del()
+
+  // Eliminar la conversación
+  await db('conversations').where('id', req.params.id).del()
+
+  res.json({ deleted: true })
 }

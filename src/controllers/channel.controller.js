@@ -1,5 +1,7 @@
 import db from '../db/knex.js'
 import { startSession, stopSession } from '../services/whatsapp.service.js'
+import { rmSync } from 'fs'
+import { join } from 'path'
 
 export async function list(req, res) {
   const { branch_id } = req.query
@@ -37,6 +39,32 @@ export async function create(req, res) {
   res.status(201).json(channel)
 }
 
+export async function update(req, res) {
+  const { branch_id, type, name, identifier } = req.body
+  const channel = await db('channels').where('id', req.params.id).first()
+  if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
+
+  const data = { updated_at: new Date() }
+  if (branch_id !== undefined) data.branch_id = branch_id
+  if (type !== undefined) data.type = type
+  if (name !== undefined) data.name = name
+  if (identifier !== undefined) {
+    data.identifier = identifier
+    data.session_id = data.type === 'whatsapp' || channel.type === 'whatsapp'
+      ? `session_${identifier}`
+      : null
+  }
+
+  await db('channels').where('id', req.params.id).update(data)
+  const updated = await db('channels as ch')
+    .join('branches as b', 'ch.branch_id', 'b.id')
+    .select('ch.*', 'b.name as branch_name')
+    .where('ch.id', req.params.id)
+    .first()
+
+  res.json(updated)
+}
+
 export async function remove(req, res) {
   const channel = await db('channels').where('id', req.params.id).first()
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
@@ -72,6 +100,6 @@ export async function getQr(req, res) {
   const channel = await db('channels').where('id', req.params.id).first()
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
 
-  const meta = channel.meta ? JSON.parse(channel.meta) : {}
+  const meta = channel.meta ? (typeof channel.meta === 'string' ? JSON.parse(channel.meta) : channel.meta) : {}
   res.json({ status: channel.status, qr: meta.qr || null })
 }

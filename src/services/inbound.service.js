@@ -1,4 +1,5 @@
 import db from '../db/knex.js'
+import { parseContactMeta } from '../utils/whatsapp-contact.js'
 
 /**
  * Procesa un mensaje entrante de cualquier canal.
@@ -9,6 +10,12 @@ export async function processInboundMessage(channel, payload, io) {
   try {
     // 1. Resolver contacto
     const contact = await resolveContact(channel.type, payload)
+
+    // Si el contacto es null (ID interno ignorado), no procesar el mensaje
+    if (!contact) {
+      console.log(`[InboundService] Contacto ignorado (sin identificador utilizable) - no se procesa mensaje`)
+      return null
+    }
 
     // 2. Resolver conversacion
     const conversation = await resolveConversation(channel.id, contact.id)
@@ -64,21 +71,150 @@ export async function processInboundMessage(channel, payload, io) {
   }
 }
 
+/**
+ * Extrae el numero de LID crudo (solo digitos) de un jid tipo "123456789@lid".
+ * Devuelve null si no es un LID.
+ */
+function extractLid(value) {
+  if (!value) return null
+  const str = String(value)
+  if (!str.includes('@lid')) return null
+  const digits = str.split('@')[0]
+  return /^\d+$/.test(digits) ? digits : null
+}
+
+/**
+ * Busca un contacto existente por LID usando la columna whatsapp_lid dedicada.
+ */
+async function findContactByLid(lid) {
+  if (!lid) return null
+  return db('contacts').where('whatsapp_lid', lid).first()
+}
+
 async function resolveContact(channelType, payload) {
   switch (channelType) {
     case 'whatsapp': {
-      let contact = await db('contacts').where('phone', payload.from_phone).first()
-      if (!contact) {
-        const [id] = await db('contacts').insert({
-          phone: payload.from_phone,
-          name:  payload.from_name || payload.from_phone,
-          created_at: new Date(), updated_at: new Date(),
-        })
-        contact = await db('contacts').where('id', id).first()
-      } else if (payload.from_name && !contact.name) {
-        await db('contacts').where('id', contact.id).update({ name: payload.from_name })
-        contact.name = payload.from_name
+      const jid = payload.from_jid || null
+      // from_phone solo debe traer un numero real; whatsapp.service.js ya no debe
+      // rellenarlo con LIDs. Si igual llega algo con @lid, lo tratamos como "sin telefono".
+      const phone = payload.from_phone && !String(payload.from_phone).includes('@lid')
+        ? payload.from_phone
+        : null
+
+      // El LID puede venir explicito (payload.lid) o embebido en jid/address_key
+      const lid = payload.lid
+        || extractLid(payload.address_key)
+        || extractLid(jid)
+        || (payload.is_lid_only ? extractLid(payload.address_key) : null)
+
+      if (!phone && !lid) {
+        console.log('[Inbound] Sin telefono ni LID utilizable, mensaje ignorado')
+        return null
       }
+
+      console.log(
+        `[Inbound] Contacto - jid: ${jid}, phone: ${phone || '(sin resolver)'}, lid: ${lid || '(n/a)'}`,
+      )
+
+      const metaPatch = {}
+      if (jid) metaPatch.whatsapp_jid = jid
+      if (lid) metaPatch.whatsapp_lid = lid
+
+      let contact = null
+
+      // 1. Si tenemos telefono real, esa es la clave primaria de busqueda/creacion
+      if (phone) {
+        contact = await db('contacts').where('phone', phone).first()
+
+        // Si no existe por telefono, puede que ya exista por LID (mismo contacto
+        // que antes solo conociamos por LID y ahora comparte su numero real)
+        if (!contact && lid) {
+          contact = await findContactByLid(lid)
+        }
+
+        if (!contact) {
+          const displayName = payload.from_name || phone
+          const [id] = await db('contacts').insert({
+            phone,
+            name: displayName,
+            whatsapp_lid: lid || null,
+            meta: Object.keys(metaPatch).length ? JSON.stringify(metaPatch) : null,
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          contact = await db('contacts').where('id', id).first()
+        } else {
+          const updates = {}
+          const existingMeta = parseContactMeta(contact.meta)
+
+          if (payload.from_name && (!contact.name || contact.name === contact.phone)) {
+            updates.name = payload.from_name
+          }
+
+          // Completar el telefono real si el contacto solo tenia LID
+          if (!contact.phone || contact.phone !== phone) {
+            updates.phone = phone
+          }
+
+          // Mantener whatsapp_lid en columna dedicada
+          if (lid && !contact.whatsapp_lid) {
+            updates.whatsapp_lid = lid
+          }
+
+          const mergedMeta = { ...existingMeta, ...metaPatch }
+          if (JSON.stringify(mergedMeta) !== JSON.stringify(existingMeta)) {
+            updates.meta = JSON.stringify(mergedMeta)
+          }
+
+          if (Object.keys(updates).length) {
+            updates.updated_at = new Date()
+            await db('contacts').where('id', contact.id).update(updates)
+            contact = { ...contact, ...updates }
+          }
+        }
+      } else {
+        // 2. Solo tenemos LID: NO lo guardamos en la columna `phone`.
+        //    Buscamos/creamos el contacto usando el LID como identificador en meta.
+        contact = await findContactByLid(lid)
+
+        if (!contact) {
+          const displayName = payload.from_name || `WhatsApp ${lid}`
+          const [id] = await db('contacts').insert({
+            phone: null,
+            name: displayName,
+            whatsapp_lid: lid,
+            meta: JSON.stringify(metaPatch),
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          contact = await db('contacts').where('id', id).first()
+        } else {
+          const updates = {}
+          const existingMeta = parseContactMeta(contact.meta)
+
+          if (payload.from_name && (!contact.name || contact.name.startsWith('WhatsApp '))) {
+            updates.name = payload.from_name
+          }
+
+          // Mantener whatsapp_lid en columna dedicada
+          if (lid && !contact.whatsapp_lid) {
+            updates.whatsapp_lid = lid
+          }
+
+          const mergedMeta = { ...existingMeta, ...metaPatch }
+          if (JSON.stringify(mergedMeta) !== JSON.stringify(existingMeta)) {
+            updates.meta = JSON.stringify(mergedMeta)
+          }
+
+          if (Object.keys(updates).length) {
+            updates.updated_at = new Date()
+            await db('contacts').where('id', contact.id).update(updates)
+            contact = { ...contact, ...updates }
+          }
+        }
+      }
+
+      console.log(`[Inbound] Contacto resuelto - id: ${contact.id}, phone: ${contact.phone || '(solo LID)'}`)
       return contact
     }
     case 'email': {
@@ -121,24 +257,61 @@ async function resolveContact(channelType, payload) {
 }
 
 async function resolveConversation(channelId, contactId) {
+  console.log(`[Inbound] resolveConversation - channelId: ${channelId}, contactId: ${contactId}`)
+
+  // 1. Buscar cualquier conversación para este contacto en este canal
   let conv = await db('conversations')
     .where('channel_id', channelId)
     .where('contact_id', contactId)
-    .whereIn('status', ['open', 'pending'])
     .orderBy('created_at', 'desc')
     .first()
 
-  if (!conv) {
-    const [id] = await db('conversations').insert({
-      channel_id:  channelId,
-      contact_id:  contactId,
-      status:      'pending',
-      unread_count: 0,
-      created_at:  new Date(),
-      updated_at:  new Date(),
-    })
-    conv = await db('conversations').where('id', id).first()
+  if (conv) {
+    if (conv.status === 'resolved') {
+      // Reabrir conversación resuelta en lugar de crear duplicado
+      await db('conversations').where('id', conv.id).update({
+        status: 'open',
+        updated_at: new Date(),
+      })
+      conv.status = 'open'
+    }
+    console.log(`[Inbound] Conversación existente encontrada en este canal: ${conv.id}`)
+    return conv
   }
 
+  // 2. Si no existe en este canal, buscar en otros canales de WhatsApp
+  const channel = await db('channels').where('id', channelId).first()
+  if (channel && channel.type === 'whatsapp') {
+    const existingConv = await db('conversations')
+      .join('channels', 'conversations.channel_id', 'channels.id')
+      .where('conversations.contact_id', contactId)
+      .where('channels.type', 'whatsapp')
+      .orderBy('conversations.created_at', 'desc')
+      .first()
+
+    if (existingConv) {
+      console.log(`[Inbound] Reutilizando conversación existente ${existingConv.id} para contacto ${contactId}`)
+      if (existingConv.status === 'resolved') {
+        await db('conversations').where('id', existingConv.id).update({
+          status: 'open',
+          updated_at: new Date(),
+        })
+        existingConv.status = 'open'
+      }
+      return existingConv
+    }
+  }
+
+  // 3. Crear nueva conversación
+  console.log(`[Inbound] Creando nueva conversación`)
+  const [id] = await db('conversations').insert({
+    channel_id:  channelId,
+    contact_id:  contactId,
+    status:      'pending',
+    unread_count: 0,
+    created_at:  new Date(),
+    updated_at:  new Date(),
+  })
+  conv = await db('conversations').where('id', id).first()
   return conv
 }
