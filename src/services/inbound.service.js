@@ -54,7 +54,7 @@ export async function processInboundMessage(channel, payload, io) {
     // 6. Emitir por Socket.io al room de la conversacion y al room de la sucursal
     const channelFull = await db('channels').where('id', channel.id).first()
 
-    io.to(`conv_${conversation.id}`).emit('message:new', {
+    io.to(`conv_${conversation.id}`).to(`branch_${channelFull.branch_id}`).emit('message:new', {
       ...message,
       contact: { id: contact.id, name: contact.name, phone: contact.phone },
     })

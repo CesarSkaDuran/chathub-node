@@ -1,14 +1,16 @@
 import { Router } from 'express'
+import multer from 'multer'
 import { authMiddleware, requireRole } from '../middlewares/auth.js'
 
 import { login, logout, me } from '../controllers/auth.controller.js'
 import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv } from '../controllers/conversation.controller.js'
-import { history, send, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
+import { history, send, uploadAndSend, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
 import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
 
 const router = Router()
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 router.post('/auth/login', login)
@@ -29,6 +31,7 @@ router.delete('/conversations/:id',                 authMiddleware, requireRole(
 // ── Mensajes ──────────────────────────────────────────────────────────────────
 router.get('/conversations/:id/messages',           authMiddleware, history)
 router.post('/conversations/:id/messages',          authMiddleware, send)
+router.post('/conversations/:id/messages/upload',   authMiddleware, upload.single('file'), uploadAndSend)
 
 // ── Canales (admin / supervisor) ──────────────────────────────────────────────
 router.get('/channels',                             authMiddleware, listChannels)

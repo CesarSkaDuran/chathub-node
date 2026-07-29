@@ -16,6 +16,7 @@ const extByMime = {
   'audio/mp4': 'm4a',
   'audio/mpeg': 'mp3',
   'audio/aac': 'aac',
+  'audio/webm': 'webm',
   'video/mp4': 'mp4',
   'video/webm': 'webm',
   'application/pdf': 'pdf',
@@ -38,9 +39,9 @@ export function getSubfolder(type) {
   return subfolderByType[type] || 'files'
 }
 
-export async function saveMedia(buffer, mimetype, type = 'file') {
-  const subfolder = getSubfolder(type)
-  const dir = join(UPLOAD_DIR, subfolder)
+export async function saveMedia(buffer, mimetype, type = 'file', scope = '') {
+  const parts = scope ? [scope, getSubfolder(type)] : [getSubfolder(type)]
+  const dir = join(UPLOAD_DIR, ...parts)
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true })
   }
@@ -49,7 +50,7 @@ export async function saveMedia(buffer, mimetype, type = 'file') {
   const filename = `${id}.${ext}`
   const filepath = join(dir, filename)
   await writeFile(filepath, buffer)
-  const relative = `/uploads/${subfolder}/${filename}`
+  const relative = `/uploads/${[...parts, filename].join('/')}`
   return MEDIA_BASE ? `${MEDIA_BASE}${relative}` : relative
 }
 

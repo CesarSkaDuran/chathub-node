@@ -1,7 +1,18 @@
 import db from '../db/knex.js'
 import { sendWhatsApp, verifyNumber, getSessionStatus } from '../services/whatsapp.service.js'
 import { resolveOutboundTarget } from '../utils/whatsapp-contact.js'
-import { deleteMedia } from '../utils/media.js'
+import { deleteMedia, saveMedia } from '../utils/media.js'
+
+const typeByMimePrefix = {
+  image: 'image',
+  audio: 'audio',
+  video: 'video',
+}
+
+function inferType(mimetype) {
+  const prefix = (mimetype || '').split('/')[0]
+  return typeByMimePrefix[prefix] || 'document'
+}
 
 export async function history(req, res) {
   const { page = 1, limit = 50 } = req.query
@@ -37,6 +48,28 @@ export async function send(req, res) {
   if (!type) return res.status(400).json({ error: 'type requerido' })
   if (type === 'text' && !body) return res.status(400).json({ error: 'body requerido para mensajes de texto' })
 
+  return sendMessageInternal(req, res, convId, { type, body, media_url })
+}
+
+export async function uploadAndSend(req, res) {
+  const convId = Number(req.params.id)
+  if (!req.file) return res.status(400).json({ error: 'Archivo requerido' })
+
+  const type = inferType(req.file.mimetype)
+  const body = req.body.caption || null
+
+  let mediaUrl
+  try {
+    mediaUrl = await saveMedia(req.file.buffer, req.file.mimetype, type, 'send')
+  } catch (err) {
+    console.error('[Message] Error guardando archivo adjunto:', err.message)
+    return res.status(500).json({ error: 'No se pudo guardar el archivo' })
+  }
+
+  return sendMessageInternal(req, res, convId, { type, body, media_url: mediaUrl })
+}
+
+async function sendMessageInternal(req, res, convId, { type, body, media_url }) {
   const conv = await db('conversations as c')
     .join('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
