@@ -184,6 +184,14 @@ async function runIncrementalMigrations() {
       console.warn('  ⚠ No se pudo agregar índice único conversations:', err.message)
     }
   }
+
+  // 6. Agregar columna is_group a contacts si no existe (grupos de WhatsApp)
+  if (await db.schema.hasTable('contacts') && !await db.schema.hasColumn('contacts', 'is_group')) {
+    await db.schema.table('contacts', t => {
+      t.boolean('is_group').defaultTo(false).index()
+    })
+    console.log('  ✓ contacts.is_group agregado')
+  }
 }
 
 async function getIndexInfo(table, indexName) {

@@ -1,6 +1,7 @@
 import db from '../db/knex.js'
 import { sendWhatsApp, verifyNumber, getSessionStatus } from '../services/whatsapp.service.js'
 import { resolveOutboundTarget } from '../utils/whatsapp-contact.js'
+import { deleteMedia } from '../utils/media.js'
 
 export async function history(req, res) {
   const { page = 1, limit = 50 } = req.query
@@ -14,9 +15,19 @@ export async function history(req, res) {
     .limit(Number(limit))
     .offset(offset)
 
+  const data = messages.map(m => {
+    if (m.direction === 'inbound' && m.meta) {
+      try {
+        const meta = typeof m.meta === 'string' ? JSON.parse(m.meta) : m.meta
+        if (meta?.participant_name) return { ...m, sender_name: meta.participant_name }
+      } catch {}
+    }
+    return m
+  })
+
   const [{ total }] = await db('messages').where('conversation_id', req.params.id).count('id as total')
 
-  res.json({ data: messages, total: Number(total), page: Number(page), limit: Number(limit) })
+  res.json({ data, total: Number(total), page: Number(page), limit: Number(limit) })
 }
 
 export async function send(req, res) {
@@ -130,4 +141,21 @@ export async function updateStatus(req, res) {
   })
 
   res.json({ updated: updated > 0 })
+}
+
+export async function removeMedia(req, res) {
+  const msg = await db('messages').where('id', req.params.id).first()
+  if (!msg) return res.status(404).json({ error: 'Mensaje no encontrado' })
+
+  if (msg.media_url) {
+    await deleteMedia(msg.media_url)
+  }
+
+  await db('messages').where('id', msg.id).update({
+    media_url: null,
+    media_mime_type: null,
+    updated_at: new Date(),
+  })
+
+  res.json({ success: true })
 }

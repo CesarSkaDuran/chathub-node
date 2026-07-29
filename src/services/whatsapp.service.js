@@ -7,6 +7,7 @@ import {
   jidNormalizedUser,
   getContentType,
   normalizeMessageContent,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys'
 import { toDataURL } from 'qrcode'
 import pino from 'pino'
@@ -15,6 +16,7 @@ import { join } from 'path'
 import db from '../db/knex.js'
 import { processInboundMessage } from './inbound.service.js'
 import { contactFromRemoteJid } from '../utils/whatsapp-contact.js'
+import { saveMedia } from '../utils/media.js'
 
 const logger = pino({ level: 'silent' })
 const sessions = new Map() // session_id => { sock, status }
@@ -48,9 +50,11 @@ function extractMessagePayload(msg) {
   } else if (msgContent?.videoMessage) {
     msgType = 'video'
     body = msgContent.videoMessage.caption || null
+    mimeType = msgContent.videoMessage.mimetype
   } else if (msgContent?.documentMessage) {
     msgType = 'document'
     body = msgContent.documentMessage.fileName
+    mimeType = msgContent.documentMessage.mimetype
   } else if (msgContent?.stickerMessage) {
     msgType = 'sticker'
   } else if (msgContent?.locationMessage) {
@@ -158,8 +162,53 @@ export async function startSession(channel, io) {
       if (msg.key.fromMe) continue
 
       const jid = msg.key.remoteJid
-      if (!jid || jid.endsWith('@g.us')) continue
+      if (!jid) continue
       if (jid === 'status@broadcast') continue
+
+      if (jid.endsWith('@g.us')) {
+        const extracted = extractMessagePayload(msg)
+        if (!extracted) continue
+
+        let { msgType, body, mediaUrl, mimeType } = extracted
+
+        if (['image', 'audio', 'video', 'document'].includes(msgType)) {
+          try {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {})
+            mediaUrl = await saveMedia(buffer, mimeType, msgType)
+          } catch (err) {
+            console.error(`[WhatsApp] Error descargando media de grupo ${msgType}:`, err.message)
+          }
+        }
+
+        let groupName = jid
+        try {
+          const groupMeta = await sock.groupMetadata(jid)
+          if (groupMeta?.subject) groupName = groupMeta.subject
+        } catch (err) {
+          console.warn(`[WhatsApp] No se pudo obtener metadata del grupo ${jid}: ${err.message}`)
+        }
+
+        const participantJid = msg.key.participant || jid
+        const participantPhone = participantJid.split('@')[0].replace(/\D/g, '')
+        const participantName = msg.pushName || participantPhone
+
+        console.log(`[WhatsApp] Inbound (grupo) - jid: ${jid}, grupo: ${groupName}, de: ${participantName}, tipo: ${msgType}`)
+
+        await processInboundMessage(channel, {
+          external_id:      msg.key.id,
+          from_jid:         jid,
+          is_group:         true,
+          group_jid:        jid,
+          group_name:       groupName,
+          from_name:        groupName,
+          participant_name: participantName,
+          type:             msgType,
+          body,
+          media_url:        mediaUrl,
+          media_mime_type:  mimeType,
+        }, io)
+        continue
+      }
 
       const isLid = jid.includes('@lid')
 
@@ -182,7 +231,16 @@ export async function startSession(channel, io) {
       const extracted = extractMessagePayload(msg)
       if (!extracted) continue
 
-      const { msgType, body, mediaUrl, mimeType } = extracted
+      let { msgType, body, mediaUrl, mimeType } = extracted
+
+      if (['image', 'audio', 'video', 'document'].includes(msgType)) {
+        try {
+          const buffer = await downloadMediaMessage(msg, 'buffer', {})
+          mediaUrl = await saveMedia(buffer, mimeType, msgType)
+        } catch (err) {
+          console.error(`[WhatsApp] Error descargando media ${msgType}:`, err.message)
+        }
+      }
 
       console.log(
         `[WhatsApp] Inbound - jid: ${jid}, phone: ${hasRealPhone ? contactInfo.phone : '(sin resolver, LID: ' + lidDigits + ')'}, tipo: ${msgType}`,

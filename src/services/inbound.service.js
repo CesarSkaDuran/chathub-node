@@ -36,6 +36,7 @@ export async function processInboundMessage(channel, payload, io) {
       media_url:       payload.media_url || null,
       media_mime_type: payload.media_mime_type || null,
       status:          'delivered',
+      meta:            payload.participant_name ? JSON.stringify({ participant_name: payload.participant_name }) : null,
       created_at:      new Date(),
       updated_at:      new Date(),
     })
@@ -94,6 +95,30 @@ async function findContactByLid(lid) {
 async function resolveContact(channelType, payload) {
   switch (channelType) {
     case 'whatsapp': {
+      if (payload.is_group) {
+        const groupJid = payload.group_jid
+        let contact = await db('contacts').where('phone', groupJid).first()
+
+        if (!contact) {
+          const [id] = await db('contacts').insert({
+            phone: groupJid,
+            name: payload.group_name || groupJid,
+            is_group: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          contact = await db('contacts').where('id', id).first()
+        } else if (payload.group_name && contact.name !== payload.group_name) {
+          await db('contacts').where('id', contact.id).update({
+            name: payload.group_name,
+            updated_at: new Date(),
+          })
+          contact = { ...contact, name: payload.group_name }
+        }
+
+        return contact
+      }
+
       const jid = payload.from_jid || null
       // from_phone solo debe traer un numero real; whatsapp.service.js ya no debe
       // rellenarlo con LIDs. Si igual llega algo con @lid, lo tratamos como "sin telefono".

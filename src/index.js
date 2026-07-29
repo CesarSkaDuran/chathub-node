@@ -4,6 +4,7 @@ import { createServer } from 'http'
 import { Server as SocketIO } from 'socket.io'
 import cors from 'cors'
 import jwt from 'jsonwebtoken'
+import { resolve } from 'path'
 
 import db from './db/knex.js'
 import { runMigrations } from './db/migrations.js'
@@ -33,6 +34,9 @@ app.use(express.urlencoded({ extended: true }))
 
 // Inyectar io en cada request para que los controllers puedan emitir eventos
 app.use((req, _res, next) => { req.io = io; next() })
+
+// ── Archivos multimedia ────────────────────────────────────────────────────────
+app.use('/uploads', express.static(resolve(process.env.MEDIA_DIR || './uploads')))
 
 // ── Rutas API ─────────────────────────────────────────────────────────────────
 app.use('/api', routes)

@@ -3,7 +3,7 @@ import { authMiddleware, requireRole } from '../middlewares/auth.js'
 
 import { login, logout, me } from '../controllers/auth.controller.js'
 import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv } from '../controllers/conversation.controller.js'
-import { history, send, updateStatus as msgStatus } from '../controllers/message.controller.js'
+import { history, send, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
 import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
@@ -42,6 +42,9 @@ router.get('/channels/:id/qr',                      authMiddleware, requireRole(
 router.get('/agents',                               authMiddleware, listAgents)
 router.post('/agents',                              authMiddleware, requireRole('admin', 'supervisor'), createAgent)
 router.put('/agents/:id',                           authMiddleware, requireRole('admin', 'supervisor'), updateAgent)
+
+// ── Mensajes multimedia ────────────────────────────────────────────────────────
+router.delete('/messages/:id/media', authMiddleware, removeMedia)
 
 // ── Webhook interno de estado de mensajes (llamado por Baileys internamente) ──
 router.post('/messages/status', msgStatus)

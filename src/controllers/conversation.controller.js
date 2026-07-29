@@ -10,6 +10,7 @@ function convQuery(user) {
       'c.id', 'c.status', 'c.unread_count', 'c.last_message_at', 'c.assigned_agent_id',
       'ch.id as channel_id', 'ch.type as channel_type', 'ch.name as channel_name',
       'ct.id as contact_id', 'ct.name as contact_name', 'ct.phone', 'ct.email as contact_email',
+      'ct.is_group as is_group',
       'ag.id as agent_id', 'ag.name as agent_name'
     )
 
@@ -22,7 +23,7 @@ function convQuery(user) {
 }
 
 export async function list(req, res) {
-  const { status, channel_id, channel_type, branch_id, search, page = 1, limit = 25 } = req.query
+  const { status, channel_id, channel_type, branch_id, search, is_group, page = 1, limit = 25 } = req.query
   const offset = (Number(page) - 1) * Number(limit)
 
   let q = convQuery(req.user)
@@ -31,6 +32,7 @@ export async function list(req, res) {
   if (channel_id)   q = q.where('c.channel_id', channel_id)
   if (channel_type) q = q.where('ch.type', channel_type)
   if (branch_id && req.user.role !== 'agent') q = q.where('ch.branch_id', branch_id)
+  if (is_group !== undefined) q = q.where('ct.is_group', is_group === 'true' || is_group === '1')
   if (search) {
     q = q.where(function () {
       this.where('ct.name', 'like', `%${search}%`)
@@ -61,7 +63,7 @@ export async function list(req, res) {
     unread_count: r.unread_count,
     last_message_at: r.last_message_at,
     channel:      { id: r.channel_id, type: r.channel_type, name: r.channel_name },
-    contact:      { id: r.contact_id, name: r.contact_name, phone: r.phone, email: r.contact_email },
+    contact:      { id: r.contact_id, name: r.contact_name, phone: r.phone, email: r.contact_email, is_group: !!r.is_group },
     assigned_agent: r.agent_id ? { id: r.agent_id, name: r.agent_name } : null,
     last_message: msgMap[r.id] || null,
   }))
@@ -75,7 +77,7 @@ export async function show(req, res) {
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .leftJoin('users as ag', 'c.assigned_agent_id', 'ag.id')
     .select('c.*', 'ch.type as channel_type', 'ch.name as channel_name', 'ch.branch_id',
-            'ct.name as contact_name', 'ct.phone', 'ct.email as contact_email',
+            'ct.name as contact_name', 'ct.phone', 'ct.email as contact_email', 'ct.is_group',
             'ag.name as agent_name')
     .where('c.id', req.params.id)
     .first()
@@ -87,7 +89,7 @@ export async function show(req, res) {
     return res.status(403).json({ error: 'Sin acceso a esta conversacion' })
   }
 
-  res.json(conv)
+  res.json({ ...conv, is_group: !!conv.is_group })
 }
 
 export async function assign(req, res) {
