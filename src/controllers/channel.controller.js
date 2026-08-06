@@ -3,6 +3,13 @@ import { startSession, stopSession } from '../services/whatsapp.service.js'
 import { rmSync } from 'fs'
 import { join } from 'path'
 
+function clearSessionFolder(session_id) {
+  if (!session_id) return
+  try {
+    rmSync(join('./sessions', session_id), { recursive: true, force: true })
+  } catch (_) {}
+}
+
 export async function list(req, res) {
   const { branch_id } = req.query
   let q = db('channels as ch').join('branches as b', 'ch.branch_id', 'b.id')
@@ -83,14 +90,17 @@ export async function reconnect(req, res) {
   if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
   if (channel.type !== 'whatsapp') return res.status(400).json({ error: 'Solo para canales WhatsApp' })
 
-  // ✅ BORRAR sesión vieja para forzar nuevo QR
+  // Detener sesión activa si existe y limpiar credenciales viejas
   if (channel.session_id) {
-    try {
-      rmSync(join('./sessions', channel.session_id), { recursive: true, force: true })
-    } catch (_) {}
+    await stopSession(channel.session_id)
+    clearSessionFolder(channel.session_id)
   }
 
-  await db('channels').where('id', channel.id).update({ status: 'connecting', updated_at: new Date() })
+  await db('channels').where('id', channel.id).update({
+    status: 'connecting',
+    meta: JSON.stringify({}),
+    updated_at: new Date(),
+  })
   startSession(channel, req.io)
 
   res.json({ message: 'Reconexion iniciada' })
