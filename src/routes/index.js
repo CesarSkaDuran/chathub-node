@@ -7,6 +7,7 @@ import { list as listConvs, show as showConv, assign, updateStatus as convStatus
 import { history, send, uploadAndSend, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
 import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
+import { list as listQuickReplies, create as createQuickReply, update as updateQuickReply, remove as removeQuickReply } from '../controllers/quick-reply.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
 
 const router = Router()
@@ -45,6 +46,12 @@ router.get('/channels/:id/qr',                      authMiddleware, requireRole(
 router.get('/agents',                               authMiddleware, listAgents)
 router.post('/agents',                              authMiddleware, requireRole('admin', 'supervisor'), createAgent)
 router.put('/agents/:id',                           authMiddleware, requireRole('admin', 'supervisor'), updateAgent)
+
+// ── Respuestas rápidas ────────────────────────────────────────────────────────
+router.get('/quick-replies',                        authMiddleware, listQuickReplies)
+router.post('/quick-replies',                       authMiddleware, requireRole('admin', 'supervisor'), createQuickReply)
+router.put('/quick-replies/:id',                    authMiddleware, requireRole('admin', 'supervisor'), updateQuickReply)
+router.delete('/quick-replies/:id',                 authMiddleware, requireRole('admin', 'supervisor'), removeQuickReply)
 
 // ── Mensajes multimedia ────────────────────────────────────────────────────────
 router.delete('/messages/:id/media', authMiddleware, removeMedia)
