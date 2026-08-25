@@ -24,6 +24,42 @@ const corsOptions = {
 
 const io     = new SocketIO(server, { cors: corsOptions })
 
+// ── Stream de logs a clientes conectados (socket-tester.html) ─────────────────
+const originalLog   = console.log
+const originalWarn  = console.warn
+const originalError = console.error
+
+function serializeLogArgs(args) {
+  return args.map(a => {
+    if (typeof a === 'object') {
+      try { return JSON.stringify(a) } catch { return String(a) }
+    }
+    return String(a)
+  }).join(' ')
+}
+
+function emitServerLog(level, args) {
+  const message = serializeLogArgs(args)
+  const first = typeof args[0] === 'string' ? args[0] : ''
+  // Emitir logs de la app (prefijo [Modulo]) y todos los errores/warnings
+  if (first.startsWith('[') || level === 'warning' || level === 'error') {
+    io.emit('log', { level, message, time: new Date().toISOString() })
+  }
+}
+
+console.log = (...args) => {
+  originalLog(...args)
+  emitServerLog('log', args)
+}
+console.warn = (...args) => {
+  originalWarn(...args)
+  emitServerLog('warning', args)
+}
+console.error = (...args) => {
+  originalError(...args)
+  emitServerLog('error', args)
+}
+
 const PORT = process.env.PORT || 3000
 
 // ── Middlewares globales ───────────────────────────────────────────────────────
@@ -77,6 +113,11 @@ io.on('connection', (socket) => {
 
   socket.on('leave:conversation', (conversationId) => {
     socket.leave(`conv_${conversationId}`)
+  })
+
+  // Tester: unirse a una sucursal para ver conversation:updated de esa branch
+  socket.on('join:branch', (branchId) => {
+    socket.join(`branch_${branchId}`)
   })
 
   // Indicador de escritura

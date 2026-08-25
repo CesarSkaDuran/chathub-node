@@ -9,6 +9,7 @@ import { list as listChannels, create as createChannel, update as updateChannel,
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
 import { list as listQuickReplies, create as createQuickReply, update as updateQuickReply, remove as removeQuickReply } from '../controllers/quick-reply.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
+import { metrics as reportMetrics, generate as reportGenerate } from '../controllers/reports.controller.js'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
@@ -20,6 +21,10 @@ router.get('/auth/me', authMiddleware, me)
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 router.get('/dashboard/stats', authMiddleware, stats)
+
+// ── Informes con IA ───────────────────────────────────────────────────────────
+router.get('/reports/metrics', authMiddleware, reportMetrics)
+router.post('/reports/generate', authMiddleware, reportGenerate)
 
 // ── Conversaciones ────────────────────────────────────────────────────────────
 router.get('/conversations',                        authMiddleware, listConvs)

@@ -98,7 +98,7 @@ export async function runMigrations() {
       t.string('external_id', 100).nullable().index()
       t.string('media_url', 500).nullable()
       t.string('media_mime_type', 100).nullable()
-      t.enum('status', ['sent', 'delivered', 'read', 'failed']).defaultTo('sent')
+      t.enum('status', ['pending', 'sent', 'delivered', 'read', 'failed']).defaultTo('sent')
       t.timestamp('read_at').nullable()
       t.json('meta').nullable()
       t.timestamps(true, true)
@@ -191,6 +191,16 @@ async function runIncrementalMigrations() {
       t.boolean('is_group').defaultTo(false).index()
     })
     console.log('  ✓ contacts.is_group agregado')
+  }
+
+  // 7. Ampliar ENUM de messages.status para incluir 'pending' (UI optimista)
+  if (await db.schema.hasTable('messages')) {
+    try {
+      await db.raw("ALTER TABLE messages MODIFY COLUMN status ENUM('pending','sent','delivered','read','failed') DEFAULT 'sent'")
+      console.log('  ✓ messages.status ampliado con pending')
+    } catch (err) {
+      console.warn('  ⚠ No se pudo ampliar messages.status:', err.message)
+    }
   }
 }
 

@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>ChatHub — Socket.io Tester</title>
+  <title>ChatHub - Socket.io Tester</title>
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,6 +32,7 @@
     .btn-green  { background: #238636; color: #fff; }
     .btn-red    { background: #b62324; color: #fff; }
     .btn-gray   { background: #30363d; color: #c9d1d9; }
+    .btn-yellow { background: #7a4a00; color: #fff; }
     button:hover { opacity: 0.85; }
 
     #status {
@@ -41,26 +42,40 @@
     .connected    { background: #1a4731; color: #3fb950; }
     .disconnected { background: #3d1515; color: #f85149; }
 
+    .console-bar {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #8b949e;
+    }
+
     #log {
       background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-      padding: 12px; height: 340px; overflow-y: auto;
-      font-size: 12px; line-height: 1.7;
+      padding: 12px; height: 500px; overflow-y: auto;
+      font-size: 12px; line-height: 1.6;
       grid-column: 1 / -1;
+      white-space: pre-wrap;
     }
     .log-in    { color: #3fb950; }
     .log-out   { color: #58a6ff; }
     .log-error { color: #f85149; }
+    .log-warning { color: #d29922; }
     .log-info  { color: #8b949e; }
     .log-event { color: #d2a8ff; }
     .ts { color: #484f58; margin-right: 6px; }
+    .log-line { border-bottom: 1px solid #1f242c; padding: 2px 0; }
+    .log-line:last-child { border-bottom: none; }
 
     label { font-size: 12px; color: #8b949e; display: block; margin-bottom: 4px; }
   </style>
 </head>
 <body>
 
-<h1>🔌 ChatHub — Socket.io Tester</h1>
-<span id="status" class="disconnected">● DESCONECTADO</span>
+<h1>ChatHub - Socket.io Tester</h1>
+<span id="status" class="disconnected">DESCONECTADO</span>
 
 <div class="grid">
 
@@ -71,19 +86,26 @@
     <input id="serverUrl" value="http://localhost:3000">
     <label>JWT Token (obtener con POST /api/auth/login)</label>
     <input id="token" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+    <label>
+      <input type="checkbox" id="autoReconnect" checked> Reconectar automaticamente
+    </label>
     <br>
     <button class="btn-blue" onclick="conectar()">Conectar</button>
     <button class="btn-red"  onclick="desconectar()">Desconectar</button>
-    <button class="btn-gray" onclick="loginRapido()">Login rápido (admin)</button>
+    <button class="btn-gray" onclick="loginRapido()">Login rapido (admin)</button>
   </div>
 
   <!-- ROOMS / CONVERSACIONES -->
   <div class="card">
-    <h2>2. Unirse a conversación</h2>
-    <label>ID de conversación</label>
+    <h2>2. Unirse a rooms</h2>
+    <label>ID de conversacion</label>
     <input id="convId" value="1" type="number">
     <button class="btn-green" onclick="joinConv()">join:conversation</button>
     <button class="btn-gray"  onclick="leaveConv()">leave:conversation</button>
+    <br><br>
+    <label>ID de sucursal (branch)</label>
+    <input id="branchId" value="1" type="number">
+    <button class="btn-green" onclick="joinBranch()">join:branch</button>
     <br><br>
     <h2>3. Typing indicator</h2>
     <button class="btn-gray" onclick="typingStart()">typing:start</button>
@@ -92,8 +114,8 @@
 
   <!-- ENVIAR MENSAJE (via API REST, no socket) -->
   <div class="card">
-    <h2>4. Enviar mensaje (API REST → dispara socket)</h2>
-    <label>ID conversación</label>
+    <h2>4. Enviar mensaje (API REST)</h2>
+    <label>ID conversacion</label>
     <input id="sendConvId" value="1" type="number">
     <label>Texto</label>
     <input id="msgBody" value="Hola desde el tester!">
@@ -108,33 +130,68 @@
     </p>
     <label>ID canal WhatsApp</label>
     <input id="simChannelId" value="1" type="number">
-    <label>Teléfono del contacto</label>
+    <label>Telefono del contacto</label>
     <input id="simPhone" value="573109999999">
     <label>Mensaje</label>
     <input id="simMsg" value="Hola, esto es una prueba entrante">
     <button class="btn-blue" onclick="simularEntrante()">Simular mensaje entrante</button>
   </div>
 
-  <!-- LOG -->
-  <div id="log"><span class="log-info ts">—</span><span class="log-info">Esperando conexión...</span></div>
+  <!-- CONSOLA -->
+  <div class="console-bar">
+    <span>CONSOLA DE LOGS DEL SERVIDOR</span>
+    <button class="btn-gray" onclick="clearLog()">Limpiar</button>
+    <button class="btn-yellow" id="pauseBtn" onclick="togglePause()">Pausar</button>
+  </div>
+  <div id="log"><div class="log-line log-info"><span class="ts">--:--:--</span>Esperando conexion...</div></div>
 
 </div>
 
 <script>
   let socket = null
   let token  = null
+  let paused = false
+  let logBuffer = []
 
   function ts() {
     return new Date().toLocaleTimeString()
   }
 
   function log(msg, type = 'info') {
+    logBuffer.push({ msg, type })
+    if (paused) return
+    renderLog()
+  }
+
+  function renderLog() {
     const div = document.getElementById('log')
-    div.innerHTML += `<div><span class="ts">${ts()}</span><span class="log-${type}">${msg}</span></div>`
+    for (const { msg, type } of logBuffer) {
+      div.innerHTML += `<div class="log-line log-${type}"><span class="ts">${ts()}</span>${escapeHtml(msg)}</div>`
+    }
+    logBuffer = []
     div.scrollTop = div.scrollHeight
   }
 
-  // ── Login rápido para obtener el token ────────────────────────────────────
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  }
+
+  function clearLog() {
+    document.getElementById('log').innerHTML = ''
+  }
+
+  function togglePause() {
+    paused = !paused
+    const btn = document.getElementById('pauseBtn')
+    btn.textContent = paused ? 'Reanudar' : 'Pausar'
+    btn.className = paused ? 'btn-green' : 'btn-yellow'
+    if (!paused) renderLog()
+  }
+
+  // -- Login rapido para obtener el token
   async function loginRapido() {
     const url = document.getElementById('serverUrl').value
     try {
@@ -147,7 +204,7 @@
       if (data.token) {
         token = data.token
         document.getElementById('token').value = token
-        log(`✓ Login OK — ${data.user.name} (${data.user.role})`, 'out')
+        log('Login OK - ' + data.user.name + ' (' + data.user.role + ')', 'out')
         log('Token guardado. Ahora haz clic en Conectar.', 'info')
       } else {
         log('Error en login: ' + JSON.stringify(data), 'error')
@@ -157,45 +214,63 @@
     }
   }
 
-  // ── Conectar Socket.io ────────────────────────────────────────────────────
+  // -- Conectar Socket.io
   function conectar() {
-    if (socket?.connected) { log('Ya estás conectado', 'info'); return }
+    if (socket?.connected) { log('Ya estas conectado', 'info'); return }
 
     token = document.getElementById('token').value.trim()
     const url = document.getElementById('serverUrl').value
 
-    if (!token) { log('Primero obtén el token con "Login rápido"', 'error'); return }
+    if (!token) { log('Primero obten el token con "Login rapido"', 'error'); return }
 
-    socket = io(url, { auth: { token } })
+    const autoReconnect = document.getElementById('autoReconnect').checked
+
+    socket = io(url, {
+      auth: { token },
+      reconnection: autoReconnect,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 3000,
+    })
 
     socket.on('connect', () => {
       document.getElementById('status').className = 'connected'
-      document.getElementById('status').textContent = '● CONECTADO — ' + socket.id
-      log('✓ Conectado al servidor. Socket ID: ' + socket.id, 'out')
+      document.getElementById('status').textContent = 'CONECTADO - ' + socket.id
+      log('Conectado al servidor. Socket ID: ' + socket.id, 'out')
     })
 
     socket.on('disconnect', (reason) => {
       document.getElementById('status').className = 'disconnected'
-      document.getElementById('status').textContent = '● DESCONECTADO'
+      document.getElementById('status').textContent = 'DESCONECTADO'
       log('Desconectado: ' + reason, 'error')
     })
 
     socket.on('connect_error', (err) => {
-      log('Error de conexión: ' + err.message, 'error')
+      log('Error de conexion: ' + err.message, 'error')
     })
 
-    // ── Eventos del servidor ─────────────────────────────────────────────
+    socket.on('reconnect_attempt', () => {
+      log('Intentando reconectar...', 'warning')
+    })
+
+    // -- Consola de logs del servidor
+    socket.on('log', (data) => {
+      const msg = '[' + data.level.toUpperCase() + '] ' + data.message
+      if (data.level === 'error') log(msg, 'error')
+      else if (data.level === 'warning') log(msg, 'warning')
+      else log(msg, 'info')
+    })
+
+    // -- Eventos del servidor
     socket.on('message:new', (data) => {
-      log('📨 message:new → ' + JSON.stringify(data, null, 0), 'in')
+      log('message:new -> ' + JSON.stringify(data, null, 0), 'in')
     })
 
     socket.on('conversation:updated', (data) => {
-      log('🔄 conversation:updated → ' + JSON.stringify(data, null, 0), 'event')
+      log('conversation:updated -> ' + JSON.stringify(data, null, 0), 'event')
     })
 
     socket.on('channel:qr', (data) => {
-      log('📷 channel:qr → channel_id: ' + data.channel_id + ' (QR recibido)', 'event')
-      // Mostrar el QR como imagen
+      log('channel:qr -> channel_id: ' + data.channel_id + ' (QR recibido)', 'event')
       const img = document.createElement('img')
       img.src = data.qr
       img.style = 'width:200px;height:200px;display:block;margin:8px 0;border:2px solid #58a6ff;border-radius:4px'
@@ -203,15 +278,15 @@
     })
 
     socket.on('channel:status', (data) => {
-      log('📡 channel:status → ' + JSON.stringify(data), 'event')
+      log('channel:status -> ' + JSON.stringify(data), 'event')
     })
 
     socket.on('typing:start', (data) => {
-      log('✍️  typing:start → ' + JSON.stringify(data), 'info')
+      log('typing:start -> ' + JSON.stringify(data), 'info')
     })
 
     socket.on('typing:stop', (data) => {
-      log('⏹  typing:stop → ' + JSON.stringify(data), 'info')
+      log('typing:stop -> ' + JSON.stringify(data), 'info')
     })
   }
 
@@ -220,36 +295,43 @@
     socket = null
   }
 
-  // ── Rooms ─────────────────────────────────────────────────────────────────
+  // -- Rooms
   function joinConv() {
     const id = document.getElementById('convId').value
     if (!socket?.connected) { log('No conectado', 'error'); return }
     socket.emit('join:conversation', Number(id))
-    log(`→ join:conversation (id: ${id})`, 'out')
+    log('join:conversation (id: ' + id + ')', 'out')
   }
 
   function leaveConv() {
     const id = document.getElementById('convId').value
     if (!socket?.connected) { log('No conectado', 'error'); return }
     socket.emit('leave:conversation', Number(id))
-    log(`→ leave:conversation (id: ${id})`, 'out')
+    log('leave:conversation (id: ' + id + ')', 'out')
+  }
+
+  function joinBranch() {
+    const id = document.getElementById('branchId').value
+    if (!socket?.connected) { log('No conectado', 'error'); return }
+    socket.emit('join:branch', Number(id))
+    log('join:branch (id: ' + id + ')', 'out')
   }
 
   function typingStart() {
     const id = document.getElementById('convId').value
     if (!socket?.connected) { log('No conectado', 'error'); return }
     socket.emit('typing:start', { conversation_id: Number(id) })
-    log(`→ typing:start (conv: ${id})`, 'out')
+    log('typing:start (conv: ' + id + ')', 'out')
   }
 
   function typingStop() {
     const id = document.getElementById('convId').value
     if (!socket?.connected) { log('No conectado', 'error'); return }
     socket.emit('typing:stop', { conversation_id: Number(id) })
-    log(`→ typing:stop (conv: ${id})`, 'out')
+    log('typing:stop (conv: ' + id + ')', 'out')
   }
 
-  // ── Enviar mensaje via REST (esto dispara el evento socket en el server) ──
+  // -- Enviar mensaje via REST
   async function enviarMensaje() {
     const url    = document.getElementById('serverUrl').value
     const convId = document.getElementById('sendConvId').value
@@ -265,7 +347,7 @@
       })
       const data = await res.json()
       if (res.ok) {
-        log(`✓ Mensaje enviado (id: ${data.id}) — el evento message:new debería aparecer arriba`, 'out')
+        log('Mensaje enviado (id: ' + data.id + ') - el evento message:new deberia aparecer', 'out')
       } else {
         log('Error: ' + JSON.stringify(data), 'error')
       }
@@ -274,7 +356,7 @@
     }
   }
 
-  // ── Simular mensaje entrante (solo para pruebas) ──────────────────────────
+  // -- Simular mensaje entrante
   async function simularEntrante() {
     const url       = document.getElementById('serverUrl').value
     const channelId = document.getElementById('simChannelId').value
@@ -283,7 +365,6 @@
 
     if (!token) { log('Sin token, haz login primero', 'error'); return }
 
-    // Llamamos un endpoint de debug que simula un mensaje entrante de Baileys
     try {
       const res = await fetch(`${url}/api/debug/simulate-inbound`, {
         method: 'POST',
@@ -292,8 +373,8 @@
       })
       const data = await res.json()
       if (res.ok) {
-        log(`✓ Mensaje entrante simulado → conv_id: ${data.conversation_id}`, 'in')
-        log('Únete a esa conversación para ver el evento message:new', 'info')
+        log('Mensaje entrante simulado -> conv_id: ' + data.conversation_id, 'in')
+        log('Unete a esa conversacion para ver el evento message:new', 'info')
       } else {
         log('Error: ' + JSON.stringify(data), 'error')
       }

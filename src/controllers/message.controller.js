@@ -71,16 +71,30 @@ export async function uploadAndSend(req, res) {
 
 async function sendMessageInternal(req, res, convId, { type, body, media_url }) {
   const conv = await db('conversations as c')
-    .join('channels as ch', 'c.channel_id', 'ch.id')
+    .leftJoin('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .select('c.id', 'c.channel_id', 'c.contact_id',
-            'ch.type as channel_type', 'ch.session_id', 'ch.status as channel_status',
+            'ch.type as channel_type', 'ch.session_id', 'ch.status as channel_status', 'ch.branch_id',
             'ct.phone', 'ct.meta as contact_meta', 'ct.email as contact_email', 'ct.instagram_handle')
     .where('c.id', convId)
     .first()
 
   if (!conv) return res.status(404).json({ error: 'Conversacion no encontrada' })
+  if (!conv.session_id) return res.status(400).json({ error: 'El canal de esta conversacion no esta conectado' })
+  if (conv.channel_status !== 'active') return res.status(400).json({ error: 'El canal de WhatsApp no esta activo' })
+  if (conv.channel_type !== 'whatsapp') return res.status(400).json({ error: 'Este canal no soporta envio de mensajes' })
 
+  const sessionActive = getSessionStatus()[conv.session_id]
+  if (sessionActive !== 'active') {
+    return res.status(400).json({ error: 'El canal de WhatsApp no esta conectado' })
+  }
+
+  const resolved = resolveOutboundTarget(conv.phone, conv.contact_meta)
+  if (!resolved) {
+    return res.status(400).json({ error: 'No se pudo determinar el destino del contacto' })
+  }
+
+  // ── Guardar mensaje en DB con estado 'pending' y responder inmediatamente ──
   const [msgId] = await db('messages').insert({
     conversation_id: convId,
     sender_user_id:  req.user.id,
@@ -88,7 +102,7 @@ async function sendMessageInternal(req, res, convId, { type, body, media_url }) 
     type,
     body:            body || null,
     media_url:       media_url || null,
-    status:          'sent',
+    status:          'pending',
     created_at:      new Date(),
     updated_at:      new Date(),
   })
@@ -98,69 +112,68 @@ async function sendMessageInternal(req, res, convId, { type, body, media_url }) 
     updated_at:      new Date(),
   })
 
-  if (conv.channel_type === 'whatsapp' && conv.session_id) {
-    const sessionActive = getSessionStatus()[conv.session_id]
-
-    if (sessionActive !== 'active') {
-      await db('messages').where('id', msgId).update({ status: 'failed' })
-      return res.status(400).json({ error: 'El canal de WhatsApp no está conectado' })
-    }
-
-    const resolved = resolveOutboundTarget(conv.phone, conv.contact_meta)
-    if (!resolved) {
-      await db('messages').where('id', msgId).update({ status: 'failed' })
-      return res.status(400).json({ error: 'No se pudo determinar el destino del contacto' })
-    }
-
-    let sendTarget = resolved.target
-
-    try {
-      if (resolved.kind === 'phone') {
-        const check = await verifyNumber(conv.session_id, resolved.target)
-        if (!check.exists || !check.jid) {
-          await db('messages').where('id', msgId).update({ status: 'failed' })
-          return res.status(400).json({
-            error: `El número ${resolved.target} no tiene WhatsApp o es inválido`,
-          })
-        }
-        sendTarget = check.jid
-      } else {
-        const check = await verifyNumber(conv.session_id, resolved.target)
-        if (check.jid) sendTarget = check.jid
-      }
-
-      const extId = await sendWhatsApp(conv.session_id, sendTarget, { type, body, media_url })
-      if (extId) {
-        await db('messages').where('id', msgId).update({
-          external_id: extId,
-          status:      'sent',
-          updated_at:  new Date(),
-        })
-      }
-    } catch (err) {
-      console.error('[Message] Error enviando WhatsApp:', err.message)
-      await db('messages').where('id', msgId).update({ status: 'failed', updated_at: new Date() })
-      return res.status(502).json({ error: 'No se pudo enviar el mensaje por WhatsApp' })
-    }
-  } else if (conv.channel_type === 'email' || conv.channel_type === 'webchat') {
-    await db('messages').where('id', msgId).update({ status: 'failed' })
-  }
-
   const message = await db('messages').where('id', msgId).first()
 
+  // Emitir el mensaje inmediatamente al frontend (UI optimista)
   req.io.to(`conv_${convId}`).emit('message:new', {
     ...message,
     sender_name: req.user.name,
   })
 
-  // Notificar a la lista de conversaciones para actualización en tiempo real
-  req.io.to(`branch_${conv.branch_id}`).emit('conversation:updated', {
+  const branchRooms = conv.branch_id ? [`branch_${conv.branch_id}`, 'all_branches'] : ['all_branches']
+  req.io.to(branchRooms).emit('conversation:updated', {
     id: convId,
     last_message_at: new Date(),
     last_message: { body, type, direction: 'outbound' },
   })
 
+  // Responder al cliente AHORA — el envío a WhatsApp continúa en background
   res.status(201).json(message)
+
+  // ── Envío a WhatsApp en segundo plano ──
+  let sendTarget = resolved.target
+  try {
+    if (resolved.kind === 'phone') {
+      const check = await verifyNumber(conv.session_id, resolved.target)
+      if (!check.exists || !check.jid) {
+        await db('messages').where('id', msgId).update({
+          status: 'failed',
+          updated_at: new Date(),
+        })
+        req.io.to(`conv_${convId}`).emit('message:status', {
+          id: msgId, status: 'failed',
+          error: `El numero ${resolved.target} no tiene WhatsApp o es invalido`,
+        })
+        return
+      }
+      sendTarget = check.jid
+    } else {
+      const check = await verifyNumber(conv.session_id, resolved.target)
+      if (check.jid) sendTarget = check.jid
+    }
+
+    const extId = await sendWhatsApp(conv.session_id, sendTarget, { type, body, media_url })
+
+    await db('messages').where('id', msgId).update({
+      status: 'sent',
+      external_id: extId,
+      updated_at: new Date(),
+    })
+
+    req.io.to(`conv_${convId}`).emit('message:status', {
+      id: msgId, status: 'sent', external_id: extId,
+    })
+  } catch (err) {
+    console.error('[Message] Error enviando WhatsApp (background):', err.message)
+    await db('messages').where('id', msgId).update({
+      status: 'failed',
+      updated_at: new Date(),
+    })
+    req.io.to(`conv_${convId}`).emit('message:status', {
+      id: msgId, status: 'failed',
+      error: 'No se pudo enviar el mensaje por WhatsApp',
+    })
+  }
 }
 
 export async function updateStatus(req, res) {

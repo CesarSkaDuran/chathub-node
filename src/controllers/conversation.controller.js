@@ -3,12 +3,13 @@ import db from '../db/knex.js'
 // Query base con joins
 function convQuery(user) {
   let q = db('conversations as c')
-    .join('channels as ch', 'c.channel_id', 'ch.id')
+    .leftJoin('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .leftJoin('users as ag', 'c.assigned_agent_id', 'ag.id')
     .select(
       'c.id', 'c.status', 'c.unread_count', 'c.last_message_at', 'c.assigned_agent_id',
       'ch.id as channel_id', 'ch.type as channel_type', 'ch.name as channel_name',
+      'ch.branch_id as branch_id',
       'ct.id as contact_id', 'ct.name as contact_name', 'ct.phone', 'ct.email as contact_email',
       'ct.is_group as is_group',
       'ag.id as agent_id', 'ag.name as agent_name'
@@ -18,6 +19,9 @@ function convQuery(user) {
   if (user.role === 'agent') {
     q = q.where('ch.branch_id', user.branch_id)
   }
+
+  // Ocultar conversaciones cuyo canal ya no existe
+  q = q.whereNotNull('ch.id')
 
   return q
 }
@@ -73,7 +77,7 @@ export async function list(req, res) {
 
 export async function show(req, res) {
   const conv = await db('conversations as c')
-    .join('channels as ch', 'c.channel_id', 'ch.id')
+    .leftJoin('channels as ch', 'c.channel_id', 'ch.id')
     .join('contacts as ct', 'c.contact_id', 'ct.id')
     .leftJoin('users as ag', 'c.assigned_agent_id', 'ag.id')
     .select('c.*', 'ch.type as channel_type', 'ch.name as channel_name', 'ch.branch_id',
@@ -112,8 +116,9 @@ export async function assign(req, res) {
     .where('c.id', req.params.id)
     .first()
 
-  // Emitir por Socket.io al room de la sucursal correcta
-  req.io.to(`branch_${conv.branch_id}`).emit('conversation:updated', conv)
+  // Emitir por Socket.io al room de la sucursal correcta y a all_branches
+  const assignRooms = conv.branch_id ? [`branch_${conv.branch_id}`, 'all_branches'] : ['all_branches']
+  req.io.to(assignRooms).emit('conversation:updated', conv)
 
   res.json(conv)
 }
@@ -127,9 +132,14 @@ export async function updateStatus(req, res) {
   if (status === 'resolved') update.resolved_at = new Date()
 
   await db('conversations').where('id', req.params.id).update(update)
-  const conv = await db('conversations').where('id', req.params.id).first()
+  const conv = await db('conversations as c')
+    .leftJoin('channels as ch', 'c.channel_id', 'ch.id')
+    .select('c.*', 'ch.branch_id')
+    .where('c.id', req.params.id)
+    .first()
 
-  req.io.to(`conv_${req.params.id}`).emit('conversation:updated', conv)
+  const statusRooms = conv?.branch_id ? [`conv_${req.params.id}`, `branch_${conv.branch_id}`, 'all_branches'] : [`conv_${req.params.id}`, 'all_branches']
+  req.io.to(statusRooms).emit('conversation:updated', conv)
 
   res.json(conv)
 }

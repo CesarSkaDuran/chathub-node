@@ -53,13 +53,19 @@ export async function processInboundMessage(channel, payload, io) {
 
     // 6. Emitir por Socket.io al room de la conversacion y al room de la sucursal
     const channelFull = await db('channels').where('id', channel.id).first()
+    const branchId = channelFull?.branch_id || null
 
-    io.to(`conv_${conversation.id}`).to(`branch_${channelFull.branch_id}`).emit('message:new', {
+    const rooms = [`conv_${conversation.id}`]
+    if (branchId) rooms.push(`branch_${branchId}`)
+    rooms.push('all_branches')
+
+    io.to(rooms).emit('message:new', {
       ...message,
       contact: { id: contact.id, name: contact.name, phone: contact.phone },
     })
 
-    io.to(`branch_${channelFull.branch_id}`).emit('conversation:updated', {
+    const convRooms = branchId ? [`branch_${branchId}`, 'all_branches'] : ['all_branches']
+    io.to(convRooms).emit('conversation:updated', {
       id:              conversation.id,
       unread_count:    conversation.unread_count + 1,
       last_message_at: new Date(),

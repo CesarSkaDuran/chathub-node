@@ -19,12 +19,24 @@ import { contactFromRemoteJid } from '../utils/whatsapp-contact.js'
 import { saveMedia } from '../utils/media.js'
 
 const logger = pino({ level: 'silent' })
-const sessions = new Map() // session_id => { sock, status, reconnectAttempts }
+const sessions = new Map() // session_id => { sock, status, channelId, reconnectAttempt }
 const reconnectAttempts = new Map() // session_id => intentos
+const sessionHealth = new Map() // session_id => { flapCount, openedAt }
 
 const MAX_RECONNECT_ATTEMPTS = 10
 const MAX_BACKOFF_MS = 120_000
 const RESTORE_DELAY_MS = 2000
+const FLAP_WINDOW_MS = 30000
+const MAX_FLAPS = 3
+
+// ── Anti-ban: control de ritmo entre envíos ──────────────
+const lastSendTimes = new Map() // session_id => timestamp del último envío
+const MIN_GAP_BETWEEN_SENDS = 8000   // mínimo 8s entre cada envío
+const MAX_GAP_BETWEEN_SENDS = 20000  // máximo 20s de espera extra
+const LONG_PAUSE_EVERY = 8           // cada 8 mensajes, pausa larga
+const LONG_PAUSE_MIN_MS = 60000      // pausa larga: 60-120s
+const LONG_PAUSE_MAX_MS = 120000
+const sendCounters = new Map()       // session_id => contador de envíos
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -122,7 +134,8 @@ export async function startSession(channel, io) {
   mkdirSync(authDir, { recursive: true })
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
-  const { version } = await fetchLatestBaileysVersion()
+  const { version, isLatest } = await fetchLatestBaileysVersion()
+  console.log(`[WhatsApp] Usando versión WA: ${version} (latest: ${isLatest}) para ${session_id}`)
 
   const sock = makeWASocket({
     version,
@@ -133,15 +146,28 @@ export async function startSession(channel, io) {
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
     generateHighQualityLinkPreview: false,
+    syncFullHistory: false,
+    fireInitQueries: true,
+    markOnlineOnConnect: false,
+    connectTimeoutMs: 60000,
+    keepAliveIntervalMs: randomBetween(25000, 45000), // jitter anti-ban
+    defaultQueryTimeoutMs: 60000,
+    shouldIgnoreJid: (jid) => jid === 'status@broadcast' || jid?.endsWith('@broadcast'),
   })
 
   const currentAttempt = (reconnectAttempts.get(session_id) || 0) + 1
   reconnectAttempts.set(session_id, currentAttempt)
   sessions.set(session_id, { sock, status: 'connecting', channelId, reconnectAttempt: currentAttempt })
+  const health = sessionHealth.get(session_id) || { flapCount: 0, openedAt: null }
+  sessionHealth.set(session_id, health)
 
-  sock.ev.on('creds.update', saveCreds)
+  sock.ev.on('creds.update', async (creds) => {
+    if (sessions.get(session_id)?.sock !== sock) return
+    await saveCreds(creds)
+  })
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (sessions.get(session_id)?.sock !== sock) return
     console.log(`[WhatsApp] Connection update - session: ${session_id}, connection: ${connection}`)
 
     if (qr) {
@@ -157,8 +183,15 @@ export async function startSession(channel, io) {
 
     if (connection === 'open') {
       reconnectAttempts.delete(session_id)
-      sessions.get(session_id).status = 'active'
-      sessions.get(session_id).reconnectAttempt = 0
+      const session = sessions.get(session_id)
+      if (session) {
+        session.status = 'active'
+        session.reconnectAttempt = 0
+      }
+      const health = sessionHealth.get(session_id) || { flapCount: 0, openedAt: null }
+      health.flapCount = 0
+      health.openedAt = Date.now()
+      sessionHealth.set(session_id, health)
       await db('channels').where('id', channelId).update({
         status: 'active', meta: JSON.stringify({}), updated_at: new Date(),
       })
@@ -170,25 +203,62 @@ export async function startSession(channel, io) {
       const code = lastDisconnect?.error?.output?.statusCode
       const reason = lastDisconnect?.error?.message || 'Unknown'
       console.log(`[WhatsApp] Connection closed - session: ${session_id}, code: ${code}, reason: ${reason}`)
+      if (lastDisconnect?.error) {
+        console.log(`[WhatsApp] Error completo:`, JSON.stringify(lastDisconnect.error, Object.getOwnPropertyNames(lastDisconnect.error), 2))
+      } else {
+        console.log(`[WhatsApp] lastDisconnect sin error - raw:`, JSON.stringify(lastDisconnect))
+      }
 
-      const isLoggedOut = code === DisconnectReason.loggedOut || code === 401 || code === 415
       const session = sessions.get(session_id)
       const attempt = (session?.reconnectAttempt || reconnectAttempts.get(session_id) || 0)
-
       sessions.delete(session_id)
 
-      if (isLoggedOut) {
+      const health = sessionHealth.get(session_id) || { flapCount: 0, openedAt: null }
+      const wasQuick = health.openedAt && (Date.now() - health.openedAt) < FLAP_WINDOW_MS
+      health.flapCount = wasQuick ? health.flapCount + 1 : 0
+      health.openedAt = null
+      sessionHealth.set(session_id, health)
+
+      const isLoggedOut = code === DisconnectReason.loggedOut || code === 401 || code === 415
+      const doNotReconnect = [
+        DisconnectReason.connectionReplaced,
+        DisconnectReason.badSession,
+        DisconnectReason.multideviceMismatch,
+        DisconnectReason.forbidden,
+      ].includes(code)
+
+      // 515 = Stream Errored (restart required): WhatsApp pide reiniciar con credenciales recién guardadas
+      if (code === DisconnectReason.restartRequired) {
+        console.log(`[WhatsApp] Reinicio requerido por WhatsApp, reconectando con credenciales: ${session_id}`)
+        reconnectAttempts.set(session_id, 0)
+        setTimeout(() => startSession(channel, io), 1000)
+        return
+      }
+
+      if (isLoggedOut || doNotReconnect || health.flapCount >= MAX_FLAPS) {
         clearSessionFolder(session_id)
         reconnectAttempts.delete(session_id)
+        sessionHealth.delete(session_id)
+        const finalStatus = isLoggedOut ? 'inactive' : 'error'
+        const metaError = isLoggedOut
+          ? null
+          : { error: `Sesion terminada: ${reason} (code ${code})` }
         await db('channels').where('id', channelId).update({
-          status: 'inactive', meta: JSON.stringify({}), updated_at: new Date(),
+          status: finalStatus,
+          meta: metaError ? JSON.stringify(metaError) : JSON.stringify({}),
+          updated_at: new Date(),
         })
-        io.emit('channel:status', { channel_id: channelId, status: 'inactive' })
-        console.log(`[WhatsApp] Sesion desvinculada/baneada - no se reconectará: ${session_id}`)
+        io.emit('channel:status', { channel_id: channelId, status: finalStatus })
+        if (health.flapCount >= MAX_FLAPS) {
+          console.log(`[WhatsApp] Sesion intermitente - limpiando y deteniendo: ${session_id}`)
+        } else {
+          console.log(`[WhatsApp] Sesion terminada sin reconexion (reason: ${reason}, code: ${code}): ${session_id}`)
+        }
         return
       }
 
       if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        sessionHealth.delete(session_id)
         await db('channels').where('id', channelId).update({
           status: 'error', meta: JSON.stringify({ error: 'Maximos intentos de reconexion alcanzados' }), updated_at: new Date(),
         })
@@ -211,6 +281,7 @@ export async function startSession(channel, io) {
   })
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (sessions.get(session_id)?.sock !== sock) return
     if (type !== 'notify') return
 
     for (const msg of messages) {
@@ -249,7 +320,7 @@ export async function startSession(channel, io) {
 
         console.log(`[WhatsApp] Inbound (grupo) - jid: ${jid}, grupo: ${groupName}, de: ${participantName}, tipo: ${msgType}`)
 
-        await processInboundMessage(channel, {
+        const groupResult = await processInboundMessage(channel, {
           external_id:      msg.key.id,
           from_jid:         jid,
           is_group:         true,
@@ -262,6 +333,7 @@ export async function startSession(channel, io) {
           media_url:        mediaUrl,
           media_mime_type:  mimeType,
         }, io)
+        console.log(`[WhatsApp] Inbound grupo procesado - msgId: ${groupResult?.id ?? 'N/A'}`)
         continue
       }
 
@@ -301,7 +373,7 @@ export async function startSession(channel, io) {
         `[WhatsApp] Inbound - jid: ${jid}, phone: ${hasRealPhone ? contactInfo.phone : '(sin resolver, LID: ' + lidDigits + ')'}, tipo: ${msgType}`,
       )
 
-      await processInboundMessage(channel, {
+      const inboundResult = await processInboundMessage(channel, {
         external_id:     msg.key.id,
         from_jid:        jid,
         from_phone:      hasRealPhone ? contactInfo.phone : null,
@@ -314,6 +386,7 @@ export async function startSession(channel, io) {
         media_url:       mediaUrl,
         media_mime_type: mimeType,
       }, io)
+      console.log(`[WhatsApp] Inbound procesado - msgId: ${inboundResult?.id ?? 'N/A'}`)
     }
   })
 
@@ -321,10 +394,12 @@ export async function startSession(channel, io) {
   // Baileys emite este evento. Lo dejamos logueado por ahora para poder
   // decidir si vale la pena usarlo para backfill de contactos existentes.
   sock.ev.on('lid-mapping.update', (mapping) => {
+    if (sessions.get(session_id)?.sock !== sock) return
     console.log(`[WhatsApp] lid-mapping.update: ${JSON.stringify(mapping)}`)
   })
 
   sock.ev.on('message-receipt.update', async (receipts) => {
+    if (sessions.get(session_id)?.sock !== sock) return
     for (const { key, receipt } of receipts) {
       const status = receipt.readTimestamp ? 'read' : 'delivered'
       await db('messages').where('external_id', key.id).update({
@@ -339,6 +414,7 @@ export async function startSession(channel, io) {
   // (enviado / entregado / leido / error) via este evento, no solo el
   // ack local que devuelve sendMessage().
   sock.ev.on('messages.update', (updates) => {
+    if (sessions.get(session_id)?.sock !== sock) return
     for (const { key, update } of updates) {
       if (update?.status !== undefined) {
         console.log(`[WhatsApp] messages.update - id: ${key.id}, status: ${update.status}`)
@@ -355,6 +431,8 @@ export async function stopSession(session_id) {
     try { session.sock.end() } catch (_) {}
     sessions.delete(session_id)
   }
+  lastSendTimes.delete(session_id)
+  sendCounters.delete(session_id)
 }
 
 /**
@@ -415,8 +493,27 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
   }
 
   try {
+    // ── Anti-ban: respetar gap entre envíos consecutivos ──
+    const lastSent = lastSendTimes.get(session_id) || 0
+    const elapsed = Date.now() - lastSent
+    const minGap = randomBetween(MIN_GAP_BETWEEN_SENDS, MAX_GAP_BETWEEN_SENDS)
+    if (elapsed < minGap) {
+      const wait = minGap - elapsed
+      console.log(`[WhatsApp] Esperando ${wait}ms antes de enviar (anti-ban)`)
+      await sleep(wait)
+    }
+
+    // ── Anti-ban: pausa larga periódica ──
+    const counter = (sendCounters.get(session_id) || 0) + 1
+    sendCounters.set(session_id, counter)
+    if (counter % LONG_PAUSE_EVERY === 0) {
+      const longPause = randomBetween(LONG_PAUSE_MIN_MS, LONG_PAUSE_MAX_MS)
+      console.log(`[WhatsApp] Pausa larga anti-ban de ${longPause}ms (envío #${counter})`)
+      await sleep(longPause)
+    }
+
     // 1. Pausa inicial antes de mostrar disponible
-    await sleep(randomBetween(500, 1200))
+    await sleep(randomBetween(800, 2000))
 
     // 2. Marcar como disponible
     await session.sock.sendPresenceUpdate('available', to)
@@ -428,9 +525,9 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
       await session.sock.sendPresenceUpdate('composing', to)
     }
 
-    // 4. Delay proporcional al contenido (mínimo 1.5s, máximo 6s)
+    // 4. Delay proporcional al contenido (mínimo 2s, máximo 8s)
     const textLength = String(body || media_url || '').length
-    const humanDelay = Math.min(Math.max(textLength * 40, 1500), 6000)
+    const humanDelay = Math.min(Math.max(textLength * 50, 2000), 8000)
     await sleep(humanDelay)
 
     // 5. Detener presencia y enviar el mensaje real
@@ -438,6 +535,7 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
 
     const result = await session.sock.sendMessage(to, content)
 
+    lastSendTimes.set(session_id, Date.now())
     console.log(`[WhatsApp] Mensaje enviado - key: ${result?.key?.id}`)
     if (!result?.key?.id) {
       console.warn(`[WhatsApp] sendMessage no devolvio key.id - revisar messages.update para status real`)
