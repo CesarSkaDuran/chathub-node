@@ -36,7 +36,12 @@ export async function processInboundMessage(channel, payload, io) {
       media_url:       payload.media_url || null,
       media_mime_type: payload.media_mime_type || null,
       status:          'delivered',
-      meta:            payload.participant_name ? JSON.stringify({ participant_name: payload.participant_name }) : null,
+      meta:            (payload.participant_name || payload.participant_jid)
+        ? JSON.stringify({
+            ...(payload.participant_name ? { participant_name: payload.participant_name } : {}),
+            ...(payload.participant_jid ? { participant_jid: payload.participant_jid } : {}),
+          })
+        : null,
       created_at:      new Date(),
       updated_at:      new Date(),
     })
@@ -290,7 +295,10 @@ async function resolveContact(channelType, payload) {
 async function resolveConversation(channelId, contactId) {
   console.log(`[Inbound] resolveConversation - channelId: ${channelId}, contactId: ${contactId}`)
 
-  // 1. Buscar cualquier conversación para este contacto en este canal
+  // Cada canal tiene su propia conversación con el mismo contacto.
+  // No reutilizar conversaciones de otros canales: si se reutiliza,
+  // al responder se envía por el session_id del canal original y el
+  // mensaje no llega desde el canal que recibió el inbound.
   let conv = await db('conversations')
     .where('channel_id', channelId)
     .where('contact_id', contactId)
@@ -299,7 +307,6 @@ async function resolveConversation(channelId, contactId) {
 
   if (conv) {
     if (conv.status === 'resolved') {
-      // Reabrir conversación resuelta en lugar de crear duplicado
       await db('conversations').where('id', conv.id).update({
         status: 'open',
         updated_at: new Date(),
@@ -310,31 +317,7 @@ async function resolveConversation(channelId, contactId) {
     return conv
   }
 
-  // 2. Si no existe en este canal, buscar en otros canales de WhatsApp
-  const channel = await db('channels').where('id', channelId).first()
-  if (channel && channel.type === 'whatsapp') {
-    const existingConv = await db('conversations')
-      .join('channels', 'conversations.channel_id', 'channels.id')
-      .where('conversations.contact_id', contactId)
-      .where('channels.type', 'whatsapp')
-      .orderBy('conversations.created_at', 'desc')
-      .first()
-
-    if (existingConv) {
-      console.log(`[Inbound] Reutilizando conversación existente ${existingConv.id} para contacto ${contactId}`)
-      if (existingConv.status === 'resolved') {
-        await db('conversations').where('id', existingConv.id).update({
-          status: 'open',
-          updated_at: new Date(),
-        })
-        existingConv.status = 'open'
-      }
-      return existingConv
-    }
-  }
-
-  // 3. Crear nueva conversación
-  console.log(`[Inbound] Creando nueva conversación`)
+  console.log(`[Inbound] Creando nueva conversación para canal ${channelId}`)
   const [id] = await db('conversations').insert({
     channel_id:  channelId,
     contact_id:  contactId,

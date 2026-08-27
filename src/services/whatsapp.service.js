@@ -328,6 +328,7 @@ export async function startSession(channel, io) {
           group_name:       groupName,
           from_name:        groupName,
           participant_name: participantName,
+          participant_jid:  participantJid,
           type:             msgType,
           body,
           media_url:        mediaUrl,
@@ -433,6 +434,33 @@ export async function stopSession(session_id) {
   }
   lastSendTimes.delete(session_id)
   sendCounters.delete(session_id)
+}
+
+/**
+ * Envía tickets de lectura (doble check azul) al contacto en WhatsApp.
+ * keys: [{ remoteJid, id, fromMe: false, participant? }]
+ */
+export async function markWhatsAppRead(session_id, keys) {
+  const session = sessions.get(session_id)
+  if (!session || session.status !== 'active') {
+    throw new Error(`Sesion ${session_id} no activa`)
+  }
+  if (!keys?.length) return 0
+
+  const payload = keys
+    .filter(k => k?.id && k?.remoteJid)
+    .map(k => ({
+      remoteJid: k.remoteJid,
+      id: k.id,
+      fromMe: false,
+      ...(k.participant ? { participant: k.participant } : {}),
+    }))
+
+  if (!payload.length) return 0
+
+  await session.sock.readMessages(payload)
+  console.log(`[WhatsApp] readMessages enviados: ${payload.length} para ${session_id}`)
+  return payload.length
 }
 
 /**

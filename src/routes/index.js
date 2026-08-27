@@ -3,7 +3,7 @@ import multer from 'multer'
 import { authMiddleware, requireRole } from '../middlewares/auth.js'
 
 import { login, logout, me } from '../controllers/auth.controller.js'
-import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv } from '../controllers/conversation.controller.js'
+import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv, countsByChannel } from '../controllers/conversation.controller.js'
 import { history, send, uploadAndSend, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
 import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
@@ -28,6 +28,7 @@ router.post('/reports/generate', authMiddleware, reportGenerate)
 
 // ── Conversaciones ────────────────────────────────────────────────────────────
 router.get('/conversations',                        authMiddleware, listConvs)
+router.get('/conversations/counts-by-channel',      authMiddleware, countsByChannel)
 router.get('/conversations/:id',                    authMiddleware, showConv)
 router.put('/conversations/:id/assign',             authMiddleware, assign)
 router.put('/conversations/:id/status',             authMiddleware, convStatus)
