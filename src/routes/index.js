@@ -5,7 +5,7 @@ import { authMiddleware, requireRole } from '../middlewares/auth.js'
 import { login, logout, me } from '../controllers/auth.controller.js'
 import { list as listConvs, show as showConv, assign, updateStatus as convStatus, markRead, remove as removeConv, countsByChannel } from '../controllers/conversation.controller.js'
 import { history, send, uploadAndSend, updateStatus as msgStatus, removeMedia } from '../controllers/message.controller.js'
-import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr } from '../controllers/channel.controller.js'
+import { list as listChannels, create as createChannel, update as updateChannel, remove as removeChannel, reconnect, getQr, health as channelHealth, repair as repairChannel } from '../controllers/channel.controller.js'
 import { list as listAgents, create as createAgent, update as updateAgent } from '../controllers/agent.controller.js'
 import { list as listQuickReplies, create as createQuickReply, update as updateQuickReply, remove as removeQuickReply } from '../controllers/quick-reply.controller.js'
 import { stats } from '../controllers/dashboard.controller.js'
@@ -47,6 +47,8 @@ router.put('/channels/:id',                         authMiddleware, requireRole(
 router.delete('/channels/:id',                      authMiddleware, requireRole('admin', 'supervisor'), removeChannel)
 router.post('/channels/:id/reconnect',              authMiddleware, requireRole('admin', 'supervisor'), reconnect)
 router.get('/channels/:id/qr',                      authMiddleware, requireRole('admin', 'supervisor'), getQr)
+router.get('/channels/:id/health',                  authMiddleware, requireRole('admin', 'supervisor'), channelHealth)
+router.post('/channels/:id/repair',                 authMiddleware, requireRole('admin', 'supervisor'), repairChannel)
 
 // ── Agentes (admin / supervisor) ──────────────────────────────────────────────
 router.get('/agents',                               authMiddleware, listAgents)

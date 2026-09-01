@@ -1,5 +1,5 @@
 import db from '../db/knex.js'
-import { startSession, stopSession } from '../services/whatsapp.service.js'
+import { getSessionHealthStatus, startSession, stopSession } from '../services/whatsapp.service.js'
 import { rmSync } from 'fs'
 import { join } from 'path'
 
@@ -112,4 +112,72 @@ export async function getQr(req, res) {
 
   const meta = channel.meta ? (typeof channel.meta === 'string' ? JSON.parse(channel.meta) : channel.meta) : {}
   res.json({ status: channel.status, qr: meta.qr || null })
+}
+
+export async function health(req, res) {
+  const channel = await db('channels').where('id', req.params.id).first()
+  if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
+  if (channel.type !== 'whatsapp') return res.status(400).json({ error: 'Solo para canales WhatsApp' })
+
+  const pendingSince = new Date(Date.now() - 60_000)
+  const sentSince = new Date(Date.now() - 5 * 60_000)
+  const lastDay = new Date(Date.now() - 24 * 60 * 60_000)
+  const conversations = db('conversations').select('id').where('channel_id', channel.id)
+
+  const [stuckPending, undelivered, latestInbound] = await Promise.all([
+    db('messages').whereIn('conversation_id', conversations.clone())
+      .where({ direction: 'outbound', status: 'pending' })
+      .where('created_at', '<', pendingSince).count('id as total').first(),
+    db('messages').whereIn('conversation_id', conversations.clone())
+      .where({ direction: 'outbound', status: 'sent' })
+      .where('created_at', '>=', lastDay).where('created_at', '<', sentSince)
+      .count('id as total').first(),
+    db('messages').whereIn('conversation_id', conversations.clone())
+      .where('direction', 'inbound').max('created_at as created_at').first(),
+  ])
+
+  const runtime = getSessionHealthStatus(channel.session_id)
+  const pendingCount = Number(stuckPending?.total || 0)
+  const undeliveredCount = Number(undelivered?.total || 0)
+  const issues = []
+  if (channel.status !== 'active') issues.push('El canal no figura activo')
+  if (!runtime.loaded || runtime.runtime_status !== 'active') issues.push('La sesion no esta activa en el proceso')
+  if (runtime.flap_count > 0) issues.push('La conexion ha presentado reinicios recientes')
+  if (pendingCount > 0) issues.push(`${pendingCount} mensaje(s) llevan mas de un minuto pendientes`)
+  if (undeliveredCount > 0) issues.push(`${undeliveredCount} mensaje(s) recientes no tienen confirmacion de entrega`)
+
+  res.json({
+    healthy: issues.length === 0,
+    needs_repair: issues.length > 0,
+    issues,
+    database_status: channel.status,
+    stuck_pending: pendingCount,
+    undelivered: undeliveredCount,
+    latest_inbound_at: latestInbound?.created_at || null,
+    ...runtime,
+  })
+}
+
+export async function repair(req, res) {
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: 'Debes confirmar la reparacion del canal' })
+  }
+
+  const channel = await db('channels').where('id', req.params.id).first()
+  if (!channel) return res.status(404).json({ error: 'Canal no encontrado' })
+  if (channel.type !== 'whatsapp') return res.status(400).json({ error: 'Solo para canales WhatsApp' })
+
+  if (channel.session_id) {
+    await stopSession(channel.session_id)
+    clearSessionFolder(channel.session_id)
+  }
+
+  await db('channels').where('id', channel.id).update({
+    status: 'connecting',
+    meta: JSON.stringify({}),
+    updated_at: new Date(),
+  })
+  startSession(channel, req.io)
+
+  res.json({ message: 'Reparacion iniciada; escanea el nuevo codigo QR' })
 }

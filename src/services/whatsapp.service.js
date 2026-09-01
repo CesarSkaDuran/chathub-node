@@ -31,11 +31,11 @@ const MAX_FLAPS = 3
 
 // ── Anti-ban: control de ritmo entre envíos ──────────────
 const lastSendTimes = new Map() // session_id => timestamp del último envío
-const MIN_GAP_BETWEEN_SENDS = 8000   // mínimo 8s entre cada envío
-const MAX_GAP_BETWEEN_SENDS = 20000  // máximo 20s de espera extra
-const LONG_PAUSE_EVERY = 8           // cada 8 mensajes, pausa larga
-const LONG_PAUSE_MIN_MS = 60000      // pausa larga: 60-120s
-const LONG_PAUSE_MAX_MS = 120000
+const MIN_GAP_BETWEEN_SENDS = 1000   // mínimo 1s entre cada envío
+const MAX_GAP_BETWEEN_SENDS = 3000   // máximo 3s de espera extra
+const LONG_PAUSE_EVERY = 25          // cada 25 mensajes, pausa larga
+const LONG_PAUSE_MIN_MS = 5000       // pausa larga: 5-10s
+const LONG_PAUSE_MAX_MS = 10000
 const sendCounters = new Map()       // session_id => contador de envíos
 
 function randomBetween(min, max) {
@@ -44,6 +44,16 @@ function randomBetween(min, max) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function withTimeout(promise, ms, operation) {
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${operation} excedio ${ms / 1000}s`)), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 function clearSessionFolder(session_id) {
@@ -487,7 +497,7 @@ export async function verifyNumber(session_id, phoneOrJid) {
   const jid = buildJid(phoneOrJid)
 
   try {
-    const results = await session.sock.onWhatsApp(jid)
+    const results = await withTimeout(session.sock.onWhatsApp(jid), 10000, 'La verificacion del numero')
     const result = results?.[0]
 
     if (!result) {
@@ -501,7 +511,7 @@ export async function verifyNumber(session_id, phoneOrJid) {
   }
 }
 
-export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_url }) {
+export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_url, media_mime_type }) {
   const session = sessions.get(session_id)
   if (!session || session.status !== 'active') {
     throw new Error(`Sesion ${session_id} no activa`)
@@ -516,11 +526,21 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
     case 'image':    content = { image: { url: media_url }, caption: body }; break
     case 'audio':    content = { audio: { url: media_url }, mimetype: 'audio/mp4', ptt: false }; break
     case 'video':    content = { video: { url: media_url }, caption: body }; break
-    case 'document': content = { document: { url: media_url }, fileName: body }; break
+    case 'document': content = {
+      document: { url: media_url },
+      fileName: body || 'documento',
+      mimetype: media_mime_type || 'application/octet-stream',
+    }; break
     default:         content = { text: body }
   }
 
   try {
+    await withTimeout(
+      session.sock.uploadPreKeysToServerIfRequired(),
+      10000,
+      'La sincronizacion de claves de WhatsApp',
+    )
+
     // ── Anti-ban: respetar gap entre envíos consecutivos ──
     const lastSent = lastSendTimes.get(session_id) || 0
     const elapsed = Date.now() - lastSent
@@ -541,7 +561,7 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
     }
 
     // 1. Pausa inicial antes de mostrar disponible
-    await sleep(randomBetween(800, 2000))
+    await sleep(randomBetween(300, 800))
 
     // 2. Marcar como disponible
     await session.sock.sendPresenceUpdate('available', to)
@@ -553,15 +573,15 @@ export async function sendWhatsApp(session_id, phoneOrJid, { type, body, media_u
       await session.sock.sendPresenceUpdate('composing', to)
     }
 
-    // 4. Delay proporcional al contenido (mínimo 2s, máximo 8s)
+    // 4. Delay proporcional al contenido (mínimo 0.5s, máximo 2s)
     const textLength = String(body || media_url || '').length
-    const humanDelay = Math.min(Math.max(textLength * 50, 2000), 8000)
+    const humanDelay = Math.min(Math.max(textLength * 20, 500), 2000)
     await sleep(humanDelay)
 
     // 5. Detener presencia y enviar el mensaje real
     await session.sock.sendPresenceUpdate('paused', to)
 
-    const result = await session.sock.sendMessage(to, content)
+    const result = await withTimeout(session.sock.sendMessage(to, content), 20000, 'El envio del mensaje')
 
     lastSendTimes.set(session_id, Date.now())
     console.log(`[WhatsApp] Mensaje enviado - key: ${result?.key?.id}`)
@@ -579,6 +599,18 @@ export function getSessionStatus() {
   const result = {}
   for (const [id, s] of sessions) result[id] = s.status
   return result
+}
+
+export function getSessionHealthStatus(session_id) {
+  const session = sessions.get(session_id)
+  const health = sessionHealth.get(session_id)
+  return {
+    loaded: Boolean(session),
+    runtime_status: session?.status || 'inactive',
+    opened_at: health?.openedAt ? new Date(health.openedAt).toISOString() : null,
+    reconnect_attempts: session?.reconnectAttempt || reconnectAttempts.get(session_id) || 0,
+    flap_count: health?.flapCount || 0,
+  }
 }
 
 export async function restoreAllSessions(io) {
